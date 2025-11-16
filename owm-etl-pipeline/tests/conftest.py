@@ -1,11 +1,15 @@
 import os
-import subprocess
 import time
+from logging import DEBUG, basicConfig, getLogger
+from uuid import uuid4
 
 import docker
 import pytest
+from pydantic import Field
 from redis import StrictRedis
-from logging import getLogger, basicConfig, DEBUG
+
+from owm.queue import RedisTaskQueueRepository
+from owm.tasks import BaseTask
 
 basicConfig(
     encoding='utf-8', 
@@ -14,29 +18,54 @@ basicConfig(
 )
 logger = getLogger(__name__)
 
-TEST_REDIS_HOST = os.environ["INGESTION_REDIS_HOST"]
-TEST_REDIS_PORT = os.environ["INGESTION_REDIS_PORT"]
-CONTAINER_NAME = os.environ["REDIS_CONTAINER_NAME"]
-REDIS_IMAGE = os.environ["REDIS_IMAGE"]
+# TODO: Map to env variables
+TEST_REDIS_HOST = "localhost"
+TEST_REDIS_PORT = 6379
+CONTAINER_NAME = "test-redis-container"
+REDIS_IMAGE = "redis:7.0-alpine"
 
 @pytest.fixture(scope="session", autouse=True)
 def docker_redis_service():
-    """Manages the lifecycle of a dedicated Redis container for the test session."""
+    """
+    Manages the lifecycle of a dedicated Redis container for the test session.
+    Includes preemptive cleanup to handle orphaned containers from previous failed runs.
+    """
     client = docker.from_env()
     container = None
+    
+    # --- PREEMPTIVE CLEANUP ---
+    try:
+        # 1. Check if the container name is already in use
+        existing_container = client.containers.get(CONTAINER_NAME)
+        logger.debug(f"Found existing container '{CONTAINER_NAME}'. Forcing removal...")
+        # 2. Force stop and remove it
+        existing_container.remove(force=True)
+    except docker.errors.NotFound:
+        # This is the expected path if no container exists with that name
+        pass
+    except Exception as e:
+        logger.warning(f"Error during preemptive container cleanup: {e}")
+    # --- END PREEMPTIVE CLEANUP ---
+    
     try:
         logger.debug(f"\nStarting Redis container '{CONTAINER_NAME}'...")
         container = client.containers.run(
             image=REDIS_IMAGE,
             name=CONTAINER_NAME,
             detach=True,
-            ports={"6379/tcp": TEST_REDIS_PORT},
+            # Ports must map the container port (6379) to the host port
+            ports={"6379/tcp": TEST_REDIS_PORT}, 
             command='redis-server --appendonly yes'
         )
+        
+        # --- Readiness Check ---
+        # NOTE: Using TEST_REDIS_HOST (127.0.0.1) and TEST_REDIS_PORT (6379) 
+        # to connect to the exposed host port.
         redis_conn = StrictRedis(host=TEST_REDIS_HOST, port=TEST_REDIS_PORT)
         max_attempts = 15
         for _ in range(max_attempts):
             try:
+                # The ping will fail until the container is fully up and listening
                 if redis_conn.ping():
                     logger.debug("Redis is ready and responding!")
                     break
@@ -44,15 +73,19 @@ def docker_redis_service():
                 time.sleep(1)
         else:
             raise ConnectionError("Redis container failed to start or respond after timeout.")
+        
+        # Yield control to the tests
         yield
         
     finally:
+        # --- POST-TEST CLEANUP ---
         if container:
             logger.debug(f"\nStopping and removing container '{CONTAINER_NAME}'...")
             try:
                 container.stop()
                 container.remove(v=True, force=True)
             except docker.errors.NotFound:
+                # Should not happen if 'container' was successfully created
                 pass 
         logger.debug("Redis container torn down.")
 
@@ -63,7 +96,38 @@ def redis_client():
     Other connections may be made to the same Redis host (e.g., to create streams), 
     but this one can be used to verify properties about the Redis instance within each test.
     """
-    client = StrictRedis(host=TEST_REDIS_HOST, port=TEST_REDIS_PORT, decode_responses=True)
+    # Decode_responses MUST be false for deserialization to work
+    client = StrictRedis(host=TEST_REDIS_HOST, port=TEST_REDIS_PORT, decode_responses=False)
     client.flushdb()
     yield client
     client.flushdb()
+
+
+class Task(BaseTask):
+    location_id: int = Field(..., description="ID of the location to process.")
+    api_name: str = Field(..., description="Name of the API to call.")
+
+@pytest.fixture
+def stream_key() -> str:
+    """Fixture for a unique stream key per test function."""
+    return f"test-stream-{int(time.time() * 1000)}"
+
+@pytest.fixture
+def repo(redis_client: StrictRedis, stream_key: str) -> RedisTaskQueueRepository:
+    """Provides an initialized repository instance for consumer operations."""
+    return RedisTaskQueueRepository(
+        client=redis_client,
+        stream_key=stream_key,
+        task_model=Task,
+        group_name="TEST_GROUP",
+        consumer_name="TEST_CONSUMER_1",
+    )
+
+@pytest.fixture
+def sample_tasks() -> list[Task]:
+    """Provides a list of sample tasks for enqueueing."""
+    return [
+        Task(task_id=uuid4(), location_id=101, api_name="owm"),
+        Task(task_id=uuid4(), location_id=102, api_name="accu"),
+        Task(task_id=uuid4(), location_id=103, api_name="owm"),
+    ]
