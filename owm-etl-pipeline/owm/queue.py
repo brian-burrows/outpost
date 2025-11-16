@@ -95,9 +95,14 @@ class RedisTaskQueueRepository(TaskQueueRepositoryInterface):
         tasks_with_ids = []
         if response and response[0][1]:
             for message_id, fields in response[0][1]:
+                LOGGER.debug(f"Processing message ID {message_id} with fields {fields}")
                 task_data = json.loads(fields.get(b'data', b'{}'))
-                task = self.task_model(**task_data) 
-                tasks_with_ids.append((message_id.decode('utf-8'), task))
+                LOGGER.debug(f"Extracted {task_data} from message ID {message_id}")
+                if task_data:
+                    task = self.task_model(**task_data) 
+                    tasks_with_ids.append((message_id.decode('utf-8'), task))
+                else:
+                    LOGGER.critical(f"Unable to process the data from message ID {message_id}")
         return tasks_with_ids
     
     def _serialize_task(self, task: list[TaskType]) -> list[str, bytes]:
@@ -116,8 +121,9 @@ class RedisTaskQueueRepository(TaskQueueRepositoryInterface):
                 maxlen=self.max_stream_length
             )
             submitted_task_ids.append(task_id)
-        pipe.execute()
+        response = pipe.execute()
         LOGGER.debug(f"Successfully executed pipeline to send {len(tasks)} to Redis {self.stream_key}")
+        LOGGER.debug(f"Received {response} from Redis after submitting tasks")
         return submitted_task_ids
     
     def dequeue_tasks(self, count: int, block_ms: int | None = None) -> list[tuple[str, TaskType]]:
@@ -130,6 +136,7 @@ class RedisTaskQueueRepository(TaskQueueRepositoryInterface):
             count=count,
             block=block_ms,
         )
+        LOGGER.debug(f"Received {response} after trying to dequeue {count} tasks")
         tasks = self._deserialize_response(response)
         LOGGER.info(f"Found and claimed {len(tasks)} tasks from {self.stream_key}")
         return tasks
