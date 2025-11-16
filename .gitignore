@@ -1,0 +1,43 @@
+# -----------------------------------------------------------------------------
+# General Development and OS Files
+# -----------------------------------------------------------------------------
+.DS_Store
+.env
+.idea/
+.vscode/
+/dist/
+/build/
+
+# -----------------------------------------------------------------------------
+# Python Artifacts
+# -----------------------------------------------------------------------------
+# Byte-compiled Python files
+__pycache__/
+*.pyc
+*.pyd
+*.pyo
+
+# Virtual environment
+.venv/
+venv/
+env/
+
+# -----------------------------------------------------------------------------
+# Temporary Files from Docker-compose builds
+# -----------------------------------------------------------------------------
+# Ignore the entire 'tmp' directory and its contents
+/tmp/
+
+# -----------------------------------------------------------------------------
+# Test and Coverage Artifacts
+# -----------------------------------------------------------------------------
+.pytest_cache/
+.coverage
+htmlcov/
+*.xml # JUnit/cobertura reports often written to XML
+
+# -----------------------------------------------------------------------------
+# Docker/Container Artifacts
+# -----------------------------------------------------------------------------
+# Docker image artifacts/build context (if any are created outside of standard build)
+*.log
