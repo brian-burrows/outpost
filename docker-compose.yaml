@@ -8,6 +8,11 @@ x-healthchecks: &healthchecks
     interval: 5s
     timeout: 5s
     retries: 5
+  redis: &redis_healthcheck
+    test: ["CMD", "redis-cli", "ping"]
+    interval: 5s
+    timeout: 5s
+    retries: 5
 
 
 x-postgres-env: &postgres_environment
@@ -21,6 +26,13 @@ x-postgres-base: &postgres_base
   image: postgres:14.19-alpine
   environment: *postgres_environment
   healthcheck: *postgres_healthcheck
+
+x-redis-base: &redis_base
+  image: redis:7.0-alpine
+  command: redis-server --appendonly yes
+  healthcheck: *redis_healthcheck
+  volumes:
+    - redis_master_data:/data
 
 # -----------------------------
 # Services
@@ -36,10 +48,17 @@ services:
     volumes:
       - postgres_data_primary:/var/lib/postgresql/data
       - ./outpost-db/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    
 
+  redis-master:
+    <<: *redis_base
+    container_name: redis_master
+    ports:
+      - "6379:6379"
 # -----------------------------
 # Volumes
 # -----------------------------
 
 volumes:
   postgres_data_primary:
+  redis_master_data:
