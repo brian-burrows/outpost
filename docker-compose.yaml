@@ -1,0 +1,45 @@
+# -----------------------------
+# Shared anchors / extensions
+# -----------------------------
+
+x-healthchecks: &healthchecks
+  postgres: &postgres_healthcheck
+    test: ["CMD-SHELL", "pg_isready -U ${OUTPOST_WEATHER_API_USERNAME:?err} -d ${OUTPOST_WEATHER_DATABASE_NAME:?err}"]
+    interval: 5s
+    timeout: 5s
+    retries: 5
+
+
+x-postgres-env: &postgres_environment
+  POSTGRES_DB: ${OUTPOST_WEATHER_DATABASE_NAME}
+  POSTGRES_USER: ${OUTPOST_WEATHER_POSTGRES_SUPER_USER:?err}
+  POSTGRES_PASSWORD: ${OUTPOST_WEATHER_POSTGRES_SUPER_USER_PASSWORD:?err}
+  POSTGRES_HOST: ${OUTPOST_PRIMARY_DATABASE_HOST}
+  POSTGRES_PORT: 5432
+
+x-postgres-base: &postgres_base
+  image: postgres:14.19-alpine
+  environment: *postgres_environment
+  healthcheck: *postgres_healthcheck
+
+# -----------------------------
+# Services
+# -----------------------------
+
+services:
+
+  outpost-database-primary:
+    <<: *postgres_base
+    container_name: outpost_database_primary
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data_primary:/var/lib/postgresql/data
+      - ./outpost-db/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+
+# -----------------------------
+# Volumes
+# -----------------------------
+
+volumes:
+  postgres_data_primary:
