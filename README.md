@@ -109,3 +109,8 @@ The container names are compatible with the underlying Kubernetes Manifests.
 For this to work, the image names in the manifests much match those in the `docker-compose.yaml` file.
 
 To clean up the service, run `eval $(minikube docker-env -u)` after testing is complete.
+
+## Useful resources
+
+- https://microservices.io/
+- https://microservices.io/patterns/data/transactional-outbox.html
