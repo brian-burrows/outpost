@@ -1,6 +1,7 @@
 import os
 import time
 from logging import DEBUG, basicConfig, getLogger
+from unittest.mock import patch
 from uuid import uuid4
 
 import docker
@@ -8,6 +9,7 @@ import pytest
 from pydantic import Field
 from redis import StrictRedis
 
+from owm.persistence import SqliteTaskOutbox
 from owm.queue import RedisTaskQueueRepository
 from owm.tasks import BaseTask
 
@@ -131,3 +133,26 @@ def sample_tasks() -> list[Task]:
         Task(task_id=uuid4(), location_id=102, api_name="accu"),
         Task(task_id=uuid4(), location_id=103, api_name="owm"),
     ]
+
+@pytest.fixture
+def test_task_model():
+    """Provides the Pydantic model used for persistence testing."""
+    return Task # This returns the Pydantic Task class
+
+@pytest.fixture
+def mock_time():
+    """Mocks the time function to return a fixed, deterministic time value."""
+    # We use a large, fixed number for easy calculation
+    fixed_time = 1700000000.0
+    with patch('owm.persistence._get_current_time', return_value=fixed_time) as mock:
+        yield mock
+
+@pytest.fixture
+def sqlite_outbox(test_task_model, mock_time, tmp_path):
+    """
+    Provides an SqliteTaskOutbox instance connected to a file-based SQLite database
+    in a temporary directory for robust testing.
+    """
+    db_file = tmp_path / "test_outbox.db"
+    outbox = SqliteTaskOutbox(db_path=str(db_file), task_type=test_task_model)
+    yield outbox
