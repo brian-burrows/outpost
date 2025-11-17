@@ -1,7 +1,7 @@
 import sqlite3
 import uuid
 
-from owm.persistence import SqliteTaskOutbox  # Import the class being tested
+from owm.persistence import SqliteTaskOutbox
 
 def get_task_id_set(tasks: list) -> set[uuid.UUID]:
         return {t.task_id for t in tasks}

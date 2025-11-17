@@ -1,5 +1,5 @@
 import logging
-from unittest.mock import MagicMock, call, create_autospec
+from unittest.mock import MagicMock
 
 import pybreaker
 import pytest
@@ -9,15 +9,7 @@ from owm.consumer import TaskConsumer, TaskProcessingManager
 from owm.exceptions import DuplicateTaskError, RateLimitExceededError
 from owm.queue import TaskQueueRepositoryInterface
 
-# Assuming imports are updated based on the file structure:
-# from owm.consumer import TaskConsumer, TaskProcessingManager, BASE_RETRYING
-# from owm.exceptions import DuplicateTaskError, RateLimitExceededError
-# from owm.queue import TaskQueueRepositoryInterface
-# from tests.conftest import Task # The Pydantic model
-
 logger = logging.getLogger(__name__)
-
-# --- Fixtures for TaskConsumer ---
 
 @pytest.fixture
 def mock_executable():
@@ -40,14 +32,12 @@ def mock_consumer(mock_executable):
     )
     return consumer
 
-# --- Manager Fixtures (Updated) ---
-
 @pytest.fixture
 def mock_task_queue(test_task_model):
     """Mock for TaskQueueRepositoryInterface instance."""
     mock = MagicMock(spec=TaskQueueRepositoryInterface)
     mock.task_model = test_task_model
-    mock.acknowledge_tasks = MagicMock() # Ensure this is easily mockable
+    mock.acknowledge_tasks = MagicMock()
     return mock
 
 @pytest.fixture
@@ -61,8 +51,6 @@ def mock_dlq(test_task_model):
 @pytest.fixture
 def manager_with_dlq(mock_consumer, mock_task_queue, mock_dlq):
     """Provides a manager instance with a configured DLQ."""
-    # We also mock the internal methods to avoid coupling tests too much
-    # and simplify verification of the core processing loop.
     manager = TaskProcessingManager(
         task_queue=mock_task_queue,
         task_consumer=mock_consumer,
@@ -72,8 +60,6 @@ def manager_with_dlq(mock_consumer, mock_task_queue, mock_dlq):
     manager._send_tasks_to_dlq_and_acknowledge = MagicMock()
     return manager
 
-
-# --- Core Test ---
 
 def test_get_and_process_batch_flow_control(
         manager_with_dlq,
@@ -89,7 +75,6 @@ def test_get_and_process_batch_flow_control(
     task_list = sample_task_factory(num_tasks=4)
     # Task queues return an internal ID for the tasks
     tasks_with_ids = [(f"msg-{i}", task_list[i]) for i in range(4)]
-    
     # Configure the queue to return the tasks
     mock_task_queue.dequeue_tasks.return_value = tasks_with_ids
     manager_with_dlq.task_consumer.execute = MagicMock()

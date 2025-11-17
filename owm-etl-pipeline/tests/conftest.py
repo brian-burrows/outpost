@@ -1,7 +1,6 @@
-import os
 import time
 from logging import DEBUG, basicConfig, getLogger
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 from uuid import uuid4
 
 import docker
@@ -9,7 +8,6 @@ import pytest
 from pydantic import Field
 from redis import StrictRedis
 
-from owm.consumer import TaskProcessingManager
 from owm.persistence import SqliteTaskOutbox
 from owm.queue import RedisTaskQueueRepository
 from owm.tasks import BaseTask
@@ -35,40 +33,27 @@ def docker_redis_service():
     """
     client = docker.from_env()
     container = None
-    
-    # --- PREEMPTIVE CLEANUP ---
     try:
-        # 1. Check if the container name is already in use
         existing_container = client.containers.get(CONTAINER_NAME)
         logger.debug(f"Found existing container '{CONTAINER_NAME}'. Forcing removal...")
-        # 2. Force stop and remove it
         existing_container.remove(force=True)
     except docker.errors.NotFound:
-        # This is the expected path if no container exists with that name
         pass
     except Exception as e:
         logger.warning(f"Error during preemptive container cleanup: {e}")
-    # --- END PREEMPTIVE CLEANUP ---
-    
     try:
         logger.debug(f"\nStarting Redis container '{CONTAINER_NAME}'...")
         container = client.containers.run(
             image=REDIS_IMAGE,
             name=CONTAINER_NAME,
             detach=True,
-            # Ports must map the container port (6379) to the host port
             ports={"6379/tcp": TEST_REDIS_PORT}, 
             command='redis-server --appendonly yes'
         )
-        
-        # --- Readiness Check ---
-        # NOTE: Using TEST_REDIS_HOST (127.0.0.1) and TEST_REDIS_PORT (6379) 
-        # to connect to the exposed host port.
         redis_conn = StrictRedis(host=TEST_REDIS_HOST, port=TEST_REDIS_PORT)
         max_attempts = 15
         for _ in range(max_attempts):
             try:
-                # The ping will fail until the container is fully up and listening
                 if redis_conn.ping():
                     logger.debug("Redis is ready and responding!")
                     break
@@ -76,19 +61,15 @@ def docker_redis_service():
                 time.sleep(1)
         else:
             raise ConnectionError("Redis container failed to start or respond after timeout.")
-        
-        # Yield control to the tests
         yield
         
     finally:
-        # --- POST-TEST CLEANUP ---
         if container:
             logger.debug(f"\nStopping and removing container '{CONTAINER_NAME}'...")
             try:
                 container.stop()
                 container.remove(v=True, force=True)
             except docker.errors.NotFound:
-                # Should not happen if 'container' was successfully created
                 pass 
         logger.debug("Redis container torn down.")
 
@@ -139,12 +120,11 @@ def sample_task_factory():
 @pytest.fixture
 def test_task_model():
     """Provides the Pydantic model used for persistence testing."""
-    return Task # This returns the Pydantic Task class
+    return Task
 
 @pytest.fixture
 def mock_time():
     """Mocks the time function to return a fixed, deterministic time value."""
-    # We use a large, fixed number for easy calculation
     fixed_time = 1700000000.0
     with patch('owm.persistence._get_current_time', return_value=fixed_time) as mock:
         yield mock
