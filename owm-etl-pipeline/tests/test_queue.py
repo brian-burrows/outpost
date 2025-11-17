@@ -13,8 +13,9 @@ def test_redis_consumer_group_creation(redis_client: StrictRedis, repo: RedisTas
     assert group_info[0]['name'] == repo.group_name.encode("utf-8")
     assert group_info[0]['last-delivered-id'] == '0-0'.encode("utf-8")
 
-def test_redis_enqueue_and_dequeue_tasks(repo: RedisTaskQueueRepository, sample_tasks: list[BaseTask]):
+def test_redis_enqueue_and_dequeue_tasks(repo: RedisTaskQueueRepository, sample_task_factory):
     """Tests basic enqueue and subsequent dequeue of messages."""
+    sample_tasks = sample_task_factory()
     enqueued_task_ids = repo.enqueue_tasks(sample_tasks)
     assert len(enqueued_task_ids) == 3
     dequeued_tasks_data = repo.dequeue_tasks(count=3, block_ms=500)
@@ -36,7 +37,8 @@ def test_redis_dequeue_blocks_when_empty(repo: RedisTaskQueueRepository):
     assert len(tasks) == 0
     assert end_time - start_time >= 0.2
 
-def test_redis_recover_stuck_tasks(redis_client: StrictRedis, repo: RedisTaskQueueRepository, sample_tasks: list[BaseTask]):
+def test_redis_recover_stuck_tasks(redis_client: StrictRedis, repo: RedisTaskQueueRepository, sample_task_factory):
     """Tests the recovery logic for stuck tasks, ensuring only the intended task is claimed."""
+    sample_tasks = sample_task_factory()
     # TODO: fix this logic and resolve timing issues
     assert True 

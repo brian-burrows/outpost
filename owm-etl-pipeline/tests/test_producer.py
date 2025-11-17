@@ -37,7 +37,8 @@ def manager(mock_task_queue, mock_storage):
 
 # --- Test produce_batch_to_disk ---
 
-def test_produce_batch_to_disk_success(manager, mock_storage, sample_tasks):
+def test_produce_batch_to_disk_success(manager, mock_storage, sample_task_factory):
+    sample_tasks = sample_task_factory()
     task_ids = manager.produce_batch_to_disk(sample_tasks)
     
     assert len(task_ids) == 3
@@ -50,7 +51,8 @@ def test_produce_batch_to_disk_empty_list(manager, mock_storage):
     assert task_ids == []
     mock_storage.insert_tasks.assert_not_called()
 
-def test_produce_batch_to_disk_storage_failure(manager, mock_storage, sample_tasks):
+def test_produce_batch_to_disk_storage_failure(manager, mock_storage, sample_task_factory):
+    sample_tasks = sample_task_factory()
     mock_storage.insert_tasks.side_effect = Exception("DB error")
     
     with pytest.raises(Exception, match="DB error"):
@@ -69,7 +71,8 @@ def test_flush_tasks_to_queue_no_tasks(manager, mock_storage, mock_task_queue):
     mock_storage.select_pending_tasks.assert_called_once_with(100)
     mock_task_queue.enqueue_tasks.assert_not_called()
 
-def test_flush_tasks_to_queue_success(manager, mock_storage, mock_task_queue, sample_tasks):
+def test_flush_tasks_to_queue_success(manager, mock_storage, mock_task_queue, sample_task_factory):
+    sample_tasks = sample_task_factory()
     # Configure mocks to simulate a successful run
     submitted_ids = [t.task_id for t in sample_tasks]
     mock_storage.select_pending_tasks.return_value = sample_tasks
@@ -82,7 +85,8 @@ def test_flush_tasks_to_queue_success(manager, mock_storage, mock_task_queue, sa
     mock_task_queue.enqueue_tasks.assert_called_once_with(sample_tasks)
     mock_storage.update_tasks_status.assert_called_once_with(submitted_ids)
 
-def test_flush_tasks_to_queue_queue_failure(manager, mock_storage, mock_task_queue, sample_tasks, caplog):
+def test_flush_tasks_to_queue_queue_failure(manager, mock_storage, mock_task_queue, sample_task_factory, caplog):
+    sample_tasks = sample_task_factory()
     mock_storage.select_pending_tasks.return_value = sample_tasks
     mock_task_queue.enqueue_tasks.side_effect = Exception("Queue network error")
     
@@ -106,7 +110,8 @@ def test_clear_tasks(manager, mock_storage):
     mock_storage.delete_old_tasks.assert_called_once_with(expire_time_seconds=expire_time)
     mock_storage.delete_completed_tasks.assert_called_once()
 
-def test_produce_batch_to_disk_retries_and_fails(manager, mock_storage, sample_tasks):
+def test_produce_batch_to_disk_retries_and_fails(manager, mock_storage, sample_task_factory):
+    sample_tasks = sample_task_factory()
     mock_storage.insert_tasks.side_effect = [
         Exception("DB error 1"), 
         Exception("DB error 2")
@@ -118,8 +123,9 @@ def test_produce_batch_to_disk_retries_and_fails(manager, mock_storage, sample_t
     assert mock_storage.insert_tasks.call_count == 2
 
 # New Test 2: Verifies produce_batch_to_disk recovers on retry
-def test_produce_batch_to_disk_recovers_on_retry(manager, mock_storage, sample_tasks):
+def test_produce_batch_to_disk_recovers_on_retry(manager, mock_storage, sample_task_factory):
     # Fail once, then succeed
+    sample_tasks = sample_task_factory()
     mock_storage.insert_tasks.side_effect = [
         Exception("Transient DB error"), 
         None # Use None to indicate success (return value is handled by the function logic)
@@ -140,10 +146,11 @@ def test_flush_retries_max_attempts_on_redis_error(
     manager, 
     mock_storage, 
     mock_task_queue, 
-    sample_tasks, 
+    sample_task_factory, 
     caplog
 ):
     """Verifies flush_tasks_to_queue attempts the max number of times quickly."""
+    sample_tasks = sample_task_factory()
     mock_storage.select_pending_tasks.return_value = sample_tasks
     mock_task_queue.enqueue_tasks.side_effect = [RedisConnectionError("Redis down")] * 10 
     with caplog.at_level(logging.ERROR):

@@ -51,6 +51,10 @@ class RedisDailyRateLimiterDao(RateLimiterInterface):
         except Exception as e:
             LOGGER.error(f"Unexpected error during rate limiting: {e}. DENYING API CALL.")
             return False
+        
+class DummyRateLimiter(RateLimiterInterface):
+    def allow_request(self):
+        return True
     
 def with_rate_limiting(rate_limiter: 'RateLimiterInterface') -> Callable[[F], F]:
     """Decorator to enforce a rate limit before executing the target function."""
