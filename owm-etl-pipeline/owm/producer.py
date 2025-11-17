@@ -57,7 +57,7 @@ class TaskProducerManager:
             raise
     
     @retry(
-        retry=retry_if_exception_type(RedisConnectionError), 
+        retry=retry_if_exception_type(RedisConnectionError),  # todo: Make this generic
         wait=wait_random_exponential(multiplier=1, min=1, max=60), 
         stop=stop_after_attempt(10), 
         reraise=True

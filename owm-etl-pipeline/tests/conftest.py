@@ -1,7 +1,7 @@
 import os
 import time
 from logging import DEBUG, basicConfig, getLogger
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 from uuid import uuid4
 
 import docker
@@ -9,6 +9,7 @@ import pytest
 from pydantic import Field
 from redis import StrictRedis
 
+from owm.consumer import TaskProcessingManager
 from owm.persistence import SqliteTaskOutbox
 from owm.queue import RedisTaskQueueRepository
 from owm.tasks import BaseTask
@@ -126,13 +127,14 @@ def repo(redis_client: StrictRedis, stream_key: str) -> RedisTaskQueueRepository
     )
 
 @pytest.fixture
-def sample_tasks() -> list[Task]:
-    """Provides a list of sample tasks for enqueueing."""
-    return [
-        Task(task_id=uuid4(), location_id=101, api_name="owm"),
-        Task(task_id=uuid4(), location_id=102, api_name="accu"),
-        Task(task_id=uuid4(), location_id=103, api_name="owm"),
-    ]
+def sample_task_factory():
+    """Provides a function (factory) to create a list of sample tasks of a specified size."""
+    def _factory(num_tasks: int = 3):
+        return [
+            Task(task_id=uuid4(), location_id=i, api_name=f"owm-{i}")
+            for i in range(101, 101 + num_tasks)
+        ]
+    return _factory
 
 @pytest.fixture
 def test_task_model():

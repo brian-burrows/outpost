@@ -18,8 +18,9 @@ def test_create_table_exists(sqlite_outbox: SqliteTaskOutbox):
         if conn:
             conn.close()
 
-def test_insert_and_select_pending_tasks(sqlite_outbox: SqliteTaskOutbox, sample_tasks: list):
+def test_insert_and_select_pending_tasks(sqlite_outbox: SqliteTaskOutbox, sample_task_factory):
     """Tests inserting tasks and then selecting them in the PENDING state."""
+    sample_tasks = sample_task_factory()
     sqlite_outbox.insert_tasks(sample_tasks)
     pending_tasks = sqlite_outbox.select_pending_tasks(limit=10)
     assert len(pending_tasks) == 3
@@ -27,16 +28,18 @@ def test_insert_and_select_pending_tasks(sqlite_outbox: SqliteTaskOutbox, sample
     retrieved_ids = get_task_id_set(pending_tasks)
     assert retrieved_ids == expected_ids
 
-def test_select_pending_tasks_limit(sqlite_outbox: SqliteTaskOutbox, sample_tasks: list):
+def test_select_pending_tasks_limit(sqlite_outbox: SqliteTaskOutbox, sample_task_factory):
     """Tests the 'limit' functionality of select_pending_tasks."""
+    sample_tasks = sample_task_factory()
     sqlite_outbox.insert_tasks(sample_tasks)
     pending_tasks = sqlite_outbox.select_pending_tasks(limit=2)
     assert len(pending_tasks) == 2
     assert get_task_id_set(pending_tasks).issubset(set(get_task_id_set(sample_tasks)))
     
 
-def test_update_tasks_status(sqlite_outbox: SqliteTaskOutbox, sample_tasks: list):
+def test_update_tasks_status(sqlite_outbox: SqliteTaskOutbox, sample_task_factory):
     """Tests updating the status of tasks."""
+    sample_tasks = sample_task_factory()
     sqlite_outbox.insert_tasks(sample_tasks)
     task_ids_to_update = [sample_tasks[0].task_id, sample_tasks[2].task_id]
     sqlite_outbox.update_tasks_status(task_ids_to_update)
@@ -44,8 +47,9 @@ def test_update_tasks_status(sqlite_outbox: SqliteTaskOutbox, sample_tasks: list
     assert len(pending_tasks) == 1
     assert pending_tasks[0].task_id == sample_tasks[1].task_id
 
-def test_delete_completed_tasks(sqlite_outbox: SqliteTaskOutbox, sample_tasks: list):
+def test_delete_completed_tasks(sqlite_outbox: SqliteTaskOutbox, sample_task_factory):
     """Tests removing tasks that are in the 'QUEUED' status."""
+    sample_tasks = sample_task_factory()
     sqlite_outbox.insert_tasks(sample_tasks)
     task_ids_to_update = [sample_tasks[0].task_id, sample_tasks[2].task_id]
     sqlite_outbox.update_tasks_status(task_ids_to_update)
@@ -64,8 +68,9 @@ def test_delete_completed_tasks(sqlite_outbox: SqliteTaskOutbox, sample_tasks: l
             conn.close()
 
 
-def test_delete_old_tasks(sqlite_outbox: SqliteTaskOutbox, sample_tasks: list, mock_time):
+def test_delete_old_tasks(sqlite_outbox: SqliteTaskOutbox, sample_task_factory, mock_time):
     """Tests deletion based on insertion timestamp and expiry time."""
+    sample_tasks = sample_task_factory()
     sqlite_outbox.insert_tasks(sample_tasks)
     new_time = 1700000010.0
     mock_time.return_value = new_time

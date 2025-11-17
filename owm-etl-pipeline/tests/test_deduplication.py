@@ -17,7 +17,8 @@ def test_deduplication_cache_class(redis_client):
     dedup.discard(task_id)
     assert dedup.is_processed(task_id) is False
 
-def test_deduplication_cache_decorator(redis_client, sample_tasks):
+def test_deduplication_cache_decorator(redis_client, sample_task_factory):
+    sample_tasks = sample_task_factory()
     dedup = RedisDeduplicationCacheRepository(
         client = redis_client,
         cache_key="my-deduplication-cache"
