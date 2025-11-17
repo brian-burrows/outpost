@@ -89,6 +89,20 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+        
+  weather-categorization-workers:
+    build: *worker_build
+    command: python /app/worker_categorization.py
+    volumes:
+      - scheduler_data:/app/data/persistent/scheduler
+    environment:
+      <<: *worker_common_env
+      WORKER_NAME: weather-categorization-worker-1
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
 
 volumes:
   postgres_data:
