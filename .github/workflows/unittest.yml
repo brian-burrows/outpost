@@ -1,0 +1,31 @@
+name: Execution of Python-based Unit tests with UV Package Manager
+
+on:
+  pull_request:
+    types:
+      - ready_for_review
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.13"]
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install UV
+        run: curl -LsSf https://astral.sh/uv/install.sh | sh
+
+      - name: Sync Environment with UV
+        working-directory: ./owm-etl-pipeline
+        run: uv sync
+
+      - name: Run Tests with UV
+        working-directory: ./owm-etl-pipeline
+        run: uv run pytest
