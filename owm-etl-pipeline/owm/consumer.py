@@ -215,7 +215,7 @@ class TaskProcessingManager(TaskProcessingManagerInterface):
                     successful_responses[msg_id] = response
                     messages_to_ack.append(msg_id)
                     LOGGER.info(f"Task {msg_id} was successfully processed")
-                except CircuitBreakerError as e:
+                except CircuitBreakerError:
                     LOGGER.debug(f"Task {msg_id} failed due to Circuit Breaker trip.")
             except RateLimitExceededError:
                 LOGGER.error(
