@@ -77,8 +77,8 @@ class TaskProducerManager:
         except Exception as e:
             # If queueing fails, the task remains locally in the "PENDING" state 
             # and will be retried on the next execution of this method.
-            LOGGER.error(f"Failed to enqueue stuck tasks. They remain 'PENDING' for next retry: {e}")
-            return 0
+            LOGGER.error(f"Failed to flush tasks to queue. They remain 'PENDING' for next retry: {e}")
+            raise e
 
     def clear_tasks(self, expire_time_seconds: int) -> None:
         self.storage.delete_old_tasks(expire_time_seconds=expire_time_seconds)

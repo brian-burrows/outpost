@@ -3,8 +3,7 @@ from abc import ABC, abstractmethod
 from contextlib import nullcontext
 from typing import Any, Callable
 
-import pybreaker
-from pybreaker import CircuitBreaker, CircuitBreakerError, CircuitBreakerListener
+from pybreaker import CircuitBreaker, CircuitBreakerError
 from tenacity import (
     Retrying,
     retry,

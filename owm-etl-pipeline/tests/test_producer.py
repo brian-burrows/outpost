@@ -90,11 +90,9 @@ def test_flush_tasks_to_queue_queue_failure(manager, mock_storage, mock_task_que
     mock_storage.select_pending_tasks.return_value = sample_tasks
     mock_task_queue.enqueue_tasks.side_effect = Exception("Queue network error")
     
-    with caplog.at_level(logging.ERROR):
-        count = manager.flush_tasks_to_queue(batch_size=10)
-    
-    assert count == 0
-    assert "Failed to enqueue stuck tasks" in caplog.text
+    with caplog.at_level(logging.ERROR), pytest.raises(Exception):
+        manager.flush_tasks_to_queue(batch_size=10)
+    assert "Failed to flush tasks to queue." in caplog.text
     
     mock_storage.select_pending_tasks.assert_called_once_with(10)
     mock_task_queue.enqueue_tasks.assert_called_once_with(sample_tasks)
@@ -153,10 +151,9 @@ def test_flush_retries_max_attempts_on_redis_error(
     sample_tasks = sample_task_factory()
     mock_storage.select_pending_tasks.return_value = sample_tasks
     mock_task_queue.enqueue_tasks.side_effect = [RedisConnectionError("Redis down")] * 10 
-    with caplog.at_level(logging.ERROR):
+    with caplog.at_level(logging.ERROR), pytest.raises(Exception):
         count = manager.flush_tasks_to_queue(batch_size=10)
-    assert count == 0
-    assert "Failed to enqueue stuck tasks" in caplog.text
+    assert "Failed to flush tasks to queue." in caplog.text
     # Assert that enqueue_tasks was called exactly 10 times (initial + 9 retries)
     assert mock_task_queue.enqueue_tasks.call_count == 10
     # Status must not be updated since all queue attempts failed
