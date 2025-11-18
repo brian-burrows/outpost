@@ -115,8 +115,19 @@ services:
     environment:
       ADMINER_DEFAULT_SERVER: db
 
+  redisinsight:
+    image: redis/redisinsight:latest
+    container_name: redisinsight
+    ports:
+      - "5540:5540"
+    volumes:
+      - redisinsight_data:/data
+    depends_on:
+      - redis
+
 volumes:
   postgres_data:
   redis_data:
   scheduler_data:
   ingestion_data:
+  redisinsight_data:
