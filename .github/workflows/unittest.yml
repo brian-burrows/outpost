@@ -1,4 +1,4 @@
-name: Execution of Python-based Unit tests with UV Package Manager
+name: Execution of Unit Tests for ETL Core Logic
 
 on:
   pull_request:
@@ -23,9 +23,9 @@ jobs:
         run: curl -LsSf https://astral.sh/uv/install.sh | sh
 
       - name: Sync Environment with UV
-        working-directory: ./owm-etl-pipeline
+        working-directory: ./outpost-etl-core
         run: uv sync
 
       - name: Run Tests with UV
-        working-directory: ./owm-etl-pipeline
+        working-directory: ./outpost-etl-core
         run: uv run pytest
