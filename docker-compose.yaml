@@ -41,10 +41,6 @@ x-worker-common-env: &worker_common_env
   CATEGORIZATION_QUEUE_HOST: redis
   <<: *app_db_creds
 
-x-worker-build: &worker_build
-  context: ./owm-etl-pipeline
-  dockerfile: Dockerfile
-
 services:
 
   db:
@@ -63,8 +59,10 @@ services:
       - redis_data:/data
 
   owm-scheduler:
-    build: *worker_build
-    command: sh -c "python /app/worker_scheduler.py && sleep 60"
+    build: 
+      context: .
+      dockerfile: ./owm-worker-api-scheduler/Dockerfile
+    command: sh -c "python /app/worker_scheduler.py && sleep 120"
     container_name: owm_scheduler
     restart: always
     environment:
@@ -77,8 +75,9 @@ services:
         condition: service_healthy
   
   owm-ingestion-workers:
-    build: *worker_build
-    command: python /app/worker_ingestion.py
+    build: 
+      context: .
+      dockerfile: ./owm-worker-api-fetch/Dockerfile
     environment:
       <<: *worker_common_env
       WORKER_NAME: owm-ingestion-workers
@@ -91,8 +90,9 @@ services:
         condition: service_healthy
         
   weather-categorization-workers:
-    build: *worker_build
-    command: python /app/worker_categorization.py
+    build:
+      context: .
+      dockerfile: ./owm-worker-weather-categorizer/Dockerfile
     volumes:
       - scheduler_data:/app/data/persistent/scheduler
     environment:
