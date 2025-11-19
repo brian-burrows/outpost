@@ -1,0 +1,49 @@
+name: Execution of Unit Tests for the worker that fetches OWM data
+
+on:
+  pull_request:
+    types:
+      - ready_for_review
+    paths:
+      - "owm-worker-api-fetch/**"
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.13"]
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install UV
+        run: curl -LsSf https://astral.sh/uv/install.sh | sh
+
+      - name: Build Core Project (outpost-etl-core)
+        run: |
+          echo "Building core project..."
+          cd ./outpost-etl-core
+          uv build
+
+      - name: Copy Core Dependency to Worker
+        run: |
+          # Create the dist folder in the worker service
+          mkdir -p "./owm-worker-api-fetch/dist"
+
+          # Copy the built artifacts from the core project into the worker's dist folder
+          echo "Copying 'dist' folder to dependent service: owm-worker-api-fetch"
+          cp -r ./outpost-etl-core/dist/. "./owm-worker-api-fetch/dist"
+          echo "Script complete."
+
+      - name: Sync Environment with UV
+        working-directory: ./owm-worker-api-fetch
+        run: uv sync
+
+      - name: Run Tests with UV
+        working-directory: ./owm-worker-api-fetch
+        run: uv run pytest
