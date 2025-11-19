@@ -1,11 +1,9 @@
 from abc import ABC, abstractmethod
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from typing import Any, Literal
 
 import requests
-from pybreaker import CircuitBreaker
 from pydantic import BaseModel, Field
-from tenacity import Retrying
 
 OWM_API_KEY = "TODO"
 
@@ -21,13 +19,6 @@ class WeatherData(WeatherDatum):
 
 
 class WeatherApiInterface(ABC):
-    def __init__(
-        self,
-        circuit_breaker: CircuitBreaker,
-        retrying: Retrying
-    ):
-        self.circuit_breaker = circuit_breaker
-        self.retrying = retrying 
 
     @abstractmethod
     def fetch_daily_historical_weather_data(
@@ -60,12 +51,14 @@ class OpenWeatherMapAccessObject(WeatherApiInterface):
     def _map_daily_data(self, data: dict[str, Any], target_date: date) -> WeatherData:
         """Maps OWM JSON daily response to the internal WeatherData model."""
         try:
+            if data.get("temperature") is None or data["temperature"].get('max', None) is None:
+                raise ValueError("Daily data missing required max temperature field.")
             return WeatherData(
                 timestamp=datetime.combine(target_date, datetime.min.time()),
                 aggregation_level="daily",
                 wind_speed_mps=data.get("wind", {}).get("max", {}).get('speed', 0.0),
                 rain_fall_total_mm=data.get('precipitation', {}).get('total', 0.0),
-                temperature_deg_c=data.get('temperature', {})["max"],
+                temperature_deg_c=data["temperature"]["max"],
             )
         except (KeyError, TypeError) as e:
             raise ValueError(f"Failed to parse OWM data structure: {e}")
@@ -73,11 +66,16 @@ class OpenWeatherMapAccessObject(WeatherApiInterface):
     def _map_hourly_data(self, hour_data: dict[str, Any]) -> WeatherData:
         """Maps a single OWM JSON hourly item to the internal WeatherData model."""
         try:
-            timestamp=datetime.fromtimestamp(hour_data['dt'])
-            wind_speed_mps=hour_data.get('wind_speed', 0)
-            rain_data = hour_data.get('rain', dict())
-            rain_fall_total_mm=rain_data.get('1h', 0.0) if rain_data is not None else 0.0
-            temperature_deg_c=hour_data["temp"]
+            dt_seconds = hour_data.get('dt')
+            temperature_deg_c = hour_data.get('temp')
+            if dt_seconds is None:
+                 raise ValueError("Hourly data missing required 'dt' field.")
+            if temperature_deg_c is None:
+                 raise ValueError("Hourly data missing required 'temp' field.")
+            timestamp = datetime.fromtimestamp(dt_seconds, tz=timezone.utc)
+            wind_speed_mps = hour_data.get('wind_speed', 0.0)
+            rain_data = hour_data.get('rain')
+            rain_fall_total_mm = rain_data.get('1h', 0.0) if isinstance(rain_data, dict) else 0.0
             return WeatherData(
                 timestamp=timestamp,
                 aggregation_level="hourly",
@@ -91,14 +89,11 @@ class OpenWeatherMapAccessObject(WeatherApiInterface):
     def _execute_request(self, url: str) -> dict[str, Any]:
         """Executes the request with Circuit Breaker and Retries."""
         try:
-            for attempt in self.retrying:
-                with attempt:
-                    with self.circuit_breaker.calling():
-                        response = requests.get(url, timeout=10)
-                        response.raise_for_status()
-                        return response.json()
+            response = requests.get(url, timeout=10)
+            response.raise_for_status()
+            return response.json()
         except requests.exceptions.RequestException as e:
-            raise ConnectionError(f"OWM API request failed after retries: {e}")
+            raise ConnectionError(f"OWM API request: {e}")
         
     def fetch_daily_historical_weather_data(self, target_date: date, lat: float, lon: float) -> WeatherData:
         """Fetches a single day's historical weather summary."""
@@ -123,7 +118,6 @@ class OpenWeatherMapAccessObject(WeatherApiInterface):
         Fetches the hourly weather forecast for the duration starting from start_date.
         OWM One Call 3.0 provides up to 48 hours of hourly forecast.
         """
-        print(f"Fetching hourly data forecast")
         exclude_parts = "current,minutely,daily,alerts"
         url = self.forecast_weather_api_url.format(
             base_url = self.BASE_URL,
@@ -134,11 +128,23 @@ class OpenWeatherMapAccessObject(WeatherApiInterface):
         )
         data = self._execute_request(url)
         forecast_data: list[WeatherData] = []
-        start_datetime = start_datetime.replace(minute=0, second=0, microsecond=0)
+        if start_datetime.tzinfo is None:
+            start_datetime = (
+                start_datetime
+                .replace(tzinfo=timezone.utc, minute=0, second=0, microsecond=0)
+            )
+        else:
+            start_datetime = (
+                start_datetime
+                .astimezone(timezone.utc)
+                .replace(minute=0, second=0, microsecond=0)
+            )
         end_datetime = start_datetime + duration
         if 'hourly' in data:
             for hour_data in data['hourly']:
-                timestamp = datetime.fromtimestamp(hour_data['dt'])
+                timestamp = (
+                    datetime.fromtimestamp(hour_data['dt'], tz=timezone.utc)
+                )
                 if start_datetime <= timestamp < end_datetime:
                     forecast_data.append(self._map_hourly_data(hour_data))  
         return forecast_data
