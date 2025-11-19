@@ -24,6 +24,22 @@ jobs:
       - name: Install UV
         run: curl -LsSf https://astral.sh/uv/install.sh | sh
 
+      - name: Build Core Project (outpost-etl-core)
+        run: |
+          echo "Building core project..."
+          cd ./outpost-etl-core
+          uv build
+
+      - name: Copy Core Dependency to Worker
+        run: |
+          # Create the dist folder in the worker service
+          mkdir -p "./owm-worker-api-fetch/dist"
+
+          # Copy the built artifacts from the core project into the worker's dist folder
+          echo "Copying 'dist' folder to dependent service: owm-worker-api-fetch"
+          cp -r ./outpost-etl-core/dist/. "./owm-worker-api-fetch/dist"
+          echo "Script complete."
+
       - name: Sync Environment with UV
         working-directory: ./owm-worker-api-fetch
         run: uv sync
