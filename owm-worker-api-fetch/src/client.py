@@ -10,7 +10,7 @@ OWM_API_KEY = "TODO"
 class WeatherDatum(BaseModel):
     wind_speed_mps: float = Field(description = "Wind speed in meters per second")
     rain_fall_total_mm: float = Field(description = "Rain fall total in mm")
-    temperature_deg_c: float = Field(description = "(Optional) Temperature in degrees celsius")
+    temperature_deg_c: float = Field(description = "Temperature in degrees celsius")
     
 
 class WeatherData(WeatherDatum):
