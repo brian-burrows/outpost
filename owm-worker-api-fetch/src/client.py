@@ -5,7 +5,7 @@ from typing import Any, Literal
 import requests
 from pydantic import BaseModel, Field
 
-OWM_API_KEY = "TODO"
+OWM_API_KEY = "TODO-TEST"
 
 class WeatherDatum(BaseModel):
     wind_speed_mps: float = Field(description = "Wind speed in meters per second")
