@@ -4,6 +4,8 @@ on:
   pull_request:
     types:
       - ready_for_review
+    paths:
+      - "outpost-ecl-core/**"
 jobs:
   test:
     runs-on: ubuntu-latest
