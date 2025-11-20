@@ -1,0 +1,33 @@
+name: Execution of Unit Tests for the Outpost Weather Service API
+
+on:
+  pull_request:
+    types:
+      - ready_for_review
+    paths:
+      - "outpost-api-weather/**"
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.13"]
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install UV
+        run: curl -LsSf https://astral.sh/uv/install.sh | sh
+
+      - name: Sync Environment with UV
+        working-directory: ./outpost-api-weather
+        run: uv sync
+
+      - name: Run Tests with UV
+        working-directory: ./outpost-api-weather
+        run: uv run pytest
