@@ -27,7 +27,7 @@ async def health_check(request: Request):
     Checks the status of all critical external dependencies (PostgreSQL and Redis).
     """
     health_status: Dict[str, Any] = {"status": "ok", "dependencies": {}}
-    app_state = request.app.state
+    # app_state = request.app.state
     all_healthy = True
     # TODO: Ping any external resources (e.g., connection pools) to ensure health
     if not all_healthy:
