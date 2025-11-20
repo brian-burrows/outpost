@@ -1,7 +1,9 @@
 import logging
 
 from fastapi import FastAPI
+from outpost.endpoints import cities#, weather
 from outpost.endpoints.system import router as system_router
+from outpost.core.database import close_db_connections
 
 LOG_LEVEL = logging.DEBUG
 logger = logging.getLogger(__name__)
@@ -13,17 +15,21 @@ app = FastAPI(
     version="1.0.0"
 )
 
+# Include all application routers
 app.include_router(system_router, tags=["System", "Monitoring"])
+app.include_router(cities.router, tags=["Cities"])
+# app.include_router(weather.router, tags=["Weather"])
+
 
 @app.on_event("startup")
 async def startup_event():
     """Initializes external services (databases, caches, etc.)"""
-    # https://fastapi.tiangolo.com/advanced/events/ for details on what goes here
     logger.info("Application startup initiated, loading configurations...")
 
 
 @app.on_event("shutdown")
 async def shutdown_event():
     """Cleans up resources by gracefully closing all connection pools."""
-    # https://fastapi.tiangolo.com/advanced/events/ for details on what goes here
-    logger.info("Application shutdown initiated, cleaning up resources...")
+    logger.info("Application shutdown initiated, cleaning up database connections...")
+    await close_db_connections()
+    logger.info("All connection pools closed.")
