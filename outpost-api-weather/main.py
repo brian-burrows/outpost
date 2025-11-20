@@ -1,9 +1,9 @@
 import logging
 
 from fastapi import FastAPI
-from outpost.endpoints import cities#, weather
-from outpost.endpoints.system import router as system_router
 from outpost.core.database import close_db_connections
+from outpost.endpoints import cities, weather
+from outpost.endpoints.system import router as system_router
 
 LOG_LEVEL = logging.DEBUG
 logger = logging.getLogger(__name__)
@@ -18,7 +18,7 @@ app = FastAPI(
 # Include all application routers
 app.include_router(system_router, tags=["System", "Monitoring"])
 app.include_router(cities.router, tags=["Cities"])
-# app.include_router(weather.router, tags=["Weather"])
+app.include_router(weather.router, tags=["Weather"])
 
 
 @app.on_event("startup")
