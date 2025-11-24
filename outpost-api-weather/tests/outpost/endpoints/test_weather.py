@@ -4,7 +4,6 @@ from datetime import datetime, timezone, timedelta
 
 TEST_CITY_ID = 500
 TEST_CITY_DATA = {
-    "city_id": TEST_CITY_ID,
     "city_name": "Testville",
     "latitude_deg": 40.0,
     "longitude_deg": -105.0
@@ -20,12 +19,13 @@ PAST_2H_ISO = (NOW - timedelta(hours=2)).isoformat().replace('+00:00', 'Z')
 async def setup_city_prerequisite(test_client: AsyncClient):
     """Utility to ensure the required city record exists for foreign key constraints."""
     response = await test_client.post("/cities/", json=TEST_CITY_DATA)
-    assert response.status_code == 200, "Failed to create prerequisite city for weather tests."
+    assert response.status_code == 201, "Failed to create prerequisite city for weather tests."
+    return response.json()["city_id"]
 
 @pytest.mark.asyncio
 async def test_post_forecast_batch_success(test_client: AsyncClient):
     """Tests successful batch creation of new forecast records."""
-    await setup_city_prerequisite(test_client)
+    TEST_CITY_ID = await setup_city_prerequisite(test_client)
     forecast_batch = [
         {
             "city_id": TEST_CITY_ID,
@@ -79,7 +79,7 @@ async def test_get_latest_forecast_success(test_client: AsyncClient):
     Tests successful retrieval of the single, *latest* forecast record 
     for a given city and aggregation level.
     """
-    await setup_city_prerequisite(test_client)
+    TEST_CITY_ID = await setup_city_prerequisite(test_client)
     old_forecast = [
         {
             "city_id": TEST_CITY_ID,
@@ -113,7 +113,7 @@ async def test_get_latest_forecast_success(test_client: AsyncClient):
 @pytest.mark.asyncio
 async def test_get_latest_forecast_not_found(test_client: AsyncClient):
     """Tests 404 response when a forecast is not found (e.g., wrong aggregation level)."""
-    await setup_city_prerequisite(test_client)
+    TEST_CITY_ID = await setup_city_prerequisite(test_client)
     daily_forecast = [
         {
             "city_id": TEST_CITY_ID,
@@ -133,7 +133,7 @@ async def test_get_latest_forecast_not_found(test_client: AsyncClient):
 @pytest.mark.asyncio
 async def test_post_historical_success(test_client: AsyncClient):
     """Tests successful single insertion of a historical record."""
-    await setup_city_prerequisite(test_client)
+    TEST_CITY_ID = await setup_city_prerequisite(test_client)
     historical_data = {
         "city_id": TEST_CITY_ID,
         "temperature_deg_c": 12.1,
@@ -156,7 +156,7 @@ async def test_get_historical_multiple_records_ordered(test_client: AsyncClient)
     """
     Tests retrieval of multiple historical records, verifying correct ordering (DESC by timestamp).
     """
-    await setup_city_prerequisite(test_client)
+    TEST_CITY_ID = await setup_city_prerequisite(test_client)
     record_older = {
         "city_id": TEST_CITY_ID,
         "temperature_deg_c": 10.0,
