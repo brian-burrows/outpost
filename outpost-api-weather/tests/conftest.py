@@ -18,18 +18,19 @@ POSTGRES_IMAGE = "postgres:16-alpine"
 CREATE_DDL_STATEMENTS = [
     "DROP TABLE IF EXISTS forecast_weather_data CASCADE;",
     "DROP TABLE IF EXISTS historical_weather_data CASCADE;",
-    "DROP TABLE IF EXISTS city CASCADE;",
+    "DROP TABLE IF EXISTS cities CASCADE;",
     """
-    CREATE TABLE city (
+    CREATE TABLE cities (
         city_id SERIAL PRIMARY KEY,
         city_name TEXT NOT NULL,
+        state_name TEXT NOT NULL,
         latitude_deg REAL NOT NULL,
         longitude_deg REAL NOT NULL
     );
     """,
     """
     CREATE TABLE forecast_weather_data (
-        city_id INTEGER NOT NULL REFERENCES city(city_id),
+        city_id INTEGER NOT NULL REFERENCES cities(city_id),
         temperature_deg_c REAL NOT NULL,
         wind_speed_mps REAL NOT NULL,
         rain_fall_total_mm REAL NOT NULL,
@@ -41,7 +42,7 @@ CREATE_DDL_STATEMENTS = [
     """,
     """
     CREATE TABLE historical_weather_data (
-        city_id INTEGER NOT NULL REFERENCES city(city_id),
+        city_id INTEGER NOT NULL REFERENCES cities(city_id),
         temperature_deg_c REAL NOT NULL,
         wind_speed_mps REAL NOT NULL,
         rain_fall_total_mm REAL NOT NULL,

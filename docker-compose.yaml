@@ -32,9 +32,9 @@ x-redis-base: &redis_base
 x-app-db-creds: &app_db_creds
   POSTGRES_HOST: db
   POSTGRES_PORT: 5432
-  POSTGRES_USER: ${APP_DB_USER:?err}
-  POSTGRES_PASSWORD: ${APP_DB_PASSWORD:?err}
   POSTGRES_DB: ${POSTGRES_DB:?err}
+  APP_DB_USER: ${APP_DB_USER:?err} # TODO: The app should only get the `app_db_user/pass`
+  APP_DB_PASSWORD: ${APP_DB_PASSWORD:?err}
 
 x-worker-common-env: &worker_common_env
   INGESTION_QUEUE_HOST: redis

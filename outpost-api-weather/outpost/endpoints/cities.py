@@ -18,6 +18,7 @@ router = APIRouter(
 class CityCreate(BaseModel):
     """Defines the expected shape of the input data for creating a city."""
     city_name: str
+    state_name: str
     latitude_deg: float
     longitude_deg: float
 
@@ -42,7 +43,7 @@ async def list_city_details(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, 
             detail=f"Requested limit exceeds the maximum allowed limit of {MAX_GET_CITIES_PAGE_SIZE}."
         )
-    count_stmt = text("SELECT COUNT(*) FROM city")
+    count_stmt = text("SELECT COUNT(*) FROM cities")
     total_count_result = await conn.execute(count_stmt)
     total_count = total_count_result.scalar_one()
     kws = dict(
@@ -54,8 +55,8 @@ async def list_city_details(
     if offset > total_count:
         return PaginatedCityDetails(**kws, cities=[])
     stmt = text("""
-        SELECT city_id, city_name, latitude_deg, longitude_deg
-        FROM city 
+        SELECT city_id, city_name, state_name, latitude_deg, longitude_deg
+        FROM cities
         ORDER BY city_id
         LIMIT :limit
         OFFSET :offset
@@ -71,8 +72,8 @@ async def get_city_detail(
 ):
     """Retrieves city details for a particular `city_id`"""
     stmt = text("""
-        SELECT city_id, city_name, latitude_deg, longitude_deg
-        FROM city
+        SELECT city_id, city_name, state_name, latitude_deg, longitude_deg
+        FROM cities
         WHERE city_id = :city_id
     """)
     result = await conn.execute(stmt, {"city_id": city_id})
@@ -89,9 +90,9 @@ async def create_new_city(
 ):
     """Creates a new city record using the write connection and raw SQL."""
     stmt = text("""
-        INSERT INTO city (city_name, latitude_deg, longitude_deg)
-        VALUES (:city_name, :latitude_deg, :longitude_deg)
-        RETURNING city_id, city_name, latitude_deg, longitude_deg
+        INSERT INTO cities (city_name, state_name, latitude_deg, longitude_deg)
+        VALUES (:city_name, :state_name, :latitude_deg, :longitude_deg)
+        RETURNING city_id, city_name, state_name, latitude_deg, longitude_deg
     """)
     trans = await conn.begin()
     result = await conn.execute(stmt, city_data.model_dump())

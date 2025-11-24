@@ -1,9 +1,26 @@
-from sqlalchemy.ext.asyncio import create_async_engine, AsyncEngine, AsyncConnection
+import os
 from typing import AsyncGenerator
 
-READ_DATABASE_URL = "postgresql+asyncpg://readonly_user:password@read-replica-host:5432/weatherdb"
-WRITE_DATABASE_URL = "postgresql+asyncpg://write_user:password@master-host:5432/weatherdb"
+from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine, create_async_engine
+from logging import getLogger
+LOGGER = getLogger(__name__)
+# --- Load Environment Variables ---
+DB_HOST = os.environ.get("DB_HOST", "db")
+DB_PORT = os.environ.get("DB_PORT", "5432")
+DB_NAME = os.environ.get("POSTGRES_DB")
+WRITE_DB_USER = os.environ.get("APP_DB_USER")
+WRITE_DB_PASS = os.environ.get("APP_DB_PASSWORD")
+READ_DB_USER = os.environ.get("APP_DB_USER")
+READ_DB_PASS = os.environ.get("APP_DB_PASSWORD")
 
+READ_DATABASE_URL = (
+    f"postgresql+asyncpg://{READ_DB_USER}:{READ_DB_PASS}"
+    f"@{DB_HOST}:{DB_PORT}/{DB_NAME}"
+)
+WRITE_DATABASE_URL = (
+    f"postgresql+asyncpg://{WRITE_DB_USER}:{WRITE_DB_PASS}"
+    f"@{DB_HOST}:{DB_PORT}/{DB_NAME}"
+)
 write_engine: AsyncEngine = create_async_engine(WRITE_DATABASE_URL, pool_size=5)
 read_engine: AsyncEngine = create_async_engine(READ_DATABASE_URL, pool_size=20)
 

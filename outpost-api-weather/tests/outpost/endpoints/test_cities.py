@@ -5,10 +5,17 @@ import pytest
 import pytest_asyncio
 from httpx import AsyncClient
 
-async def _insert_city(client: AsyncClient, name: str, lat: float, lon: float) -> Dict:
+async def _insert_city(
+    client: AsyncClient, 
+    name: str, 
+    state_name: str,
+    lat: float, 
+    lon: float
+) -> Dict:
     """Inserts a single city record and returns its JSON response."""
     city_data = {
         "city_name": name,
+        "state_name": state_name,
         "latitude_deg": lat,
         "longitude_deg": lon,
     }
@@ -23,7 +30,7 @@ async def five_cities_setup(test_client: AsyncClient) -> List[Dict]:
     of the created city objects.
     """
     setup_cities = [
-        {"name": f"City_{i}", "lat": 10.0 + i, "lon": 20.0 + i} for i in range(5)
+        {"name": f"City_{i}", "state_name": "Colorado", "lat": 10.0 + i, "lon": 20.0 + i} for i in range(5)
     ]
     created_cities = []
     for city in setup_cities:
@@ -39,6 +46,7 @@ async def test_get_city_detail_success(test_client: AsyncClient):
     """
     city_data = {
         "city_name": "Denver",
+        "state_name": "Colorado",
         "latitude_deg": 39.7392,
         "longitude_deg": 143.15235
     }
@@ -49,6 +57,7 @@ async def test_get_city_detail_success(test_client: AsyncClient):
     assert response.status_code == 200
     rj = response.json()
     assert rj["city_name"] == city_data["city_name"]
+    assert rj["state_name"] == city_data["state_name"]
     assert rj["latitude_deg"] == pytest.approx(city_data["latitude_deg"])
     assert rj["longitude_deg"] == pytest.approx(city_data["longitude_deg"])
 
@@ -70,6 +79,7 @@ async def test_post_city_success(test_client: AsyncClient):
     """
     city_data = {
         "city_name": "Boulder",
+        "state_name": "Colorado",
         "latitude_deg": 40.0150,
         "longitude_deg": 90.51234,
     }
@@ -80,6 +90,7 @@ async def test_post_city_success(test_client: AsyncClient):
     assert verification_response.status_code == 200
     rj = verification_response.json()
     assert rj["city_name"] == city_data["city_name"]
+    assert rj["state_name"] == city_data["state_name"]
     assert rj["latitude_deg"] == pytest.approx(city_data["latitude_deg"])
     assert rj["longitude_deg"] == pytest.approx(city_data["longitude_deg"])
 
@@ -106,8 +117,8 @@ async def test_list_cities_empty(test_client: AsyncClient):
 async def test_list_cities_basic_retrieval(test_client: AsyncClient):
     """Tests successful retrieval of cities without using pagination params."""
     cities_to_insert = [
-        {"name": "Aachen", "lat": 50.7753, "lon": 6.0839},
-        {"name": "Berlin", "lat": 52.5200, "lon": 13.4050},
+        {"name": "Aachen", "state_name": "Colorado", "lat": 50.7753, "lon": 6.0839},
+        {"name": "Berlin", "state_name": "Colorado", "lat": 52.5200, "lon": 13.4050},
     ]
     await asyncio.gather(*[_insert_city(test_client, **city) for city in cities_to_insert])
     response = await test_client.get("/cities/")

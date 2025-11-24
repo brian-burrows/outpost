@@ -5,6 +5,7 @@ from datetime import datetime, timezone, timedelta
 TEST_CITY_ID = 500
 TEST_CITY_DATA = {
     "city_name": "Testville",
+    "state_name": "Teststate",
     "latitude_deg": 40.0,
     "longitude_deg": -105.0
 }
