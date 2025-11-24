@@ -188,7 +188,7 @@ class SqliteTaskOutbox(TaskOutboxInterface):
     
     def delete_completed_tasks(self) -> None:
         """Removes tasks that have been fully processed and are no longer needed."""
-        LOGGER.debug("Deleting all completed tasks from {self.table_name}")
+        LOGGER.debug(f"Deleting all completed tasks from {self.table_name}")
         conn = None
         with self.lock:
             try:
