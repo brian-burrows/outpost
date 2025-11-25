@@ -39,6 +39,7 @@ CONSUME_COUNT = 100
 CONSUME_BLOCK_MS = 1000
 INGESTION_MAX_RETRIES = 5
 INGESTION_MAX_IDLE_MS = 600000
+INGESTION_EXPIRY_TIME_MS = 0#2.16e7
 DLQ_STREAM_KEY = f"dlq:{INGESTION_STREAM_KEY}"
 DLQ_MAX_STREAM_SIZE = 200
 PEL_CHECK_FREQUENCY_SECONDS = 60
@@ -201,6 +202,7 @@ def _handle_PEL_batch(producer, consumer):
     LOGGER.debug("Fetching tasks from the upstream queue's PEL")
     pel_downstream_tasks, _ = consumer.get_and_process_stuck_tasks(
         max_idle_ms = INGESTION_MAX_IDLE_MS,
+        expiry_time_ms = INGESTION_EXPIRY_TIME_MS,
         max_retries = INGESTION_MAX_RETRIES,
         batch_size = PENDING_ENTRY_LIST_BATCH_SIZE,
     )
