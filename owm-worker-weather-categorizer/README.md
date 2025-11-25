@@ -107,3 +107,13 @@ The worker's runtime behavior and external connectivity are configured using the
 | `WORKER_NAME`               | `categorization-worker-{pid}` | Unique identifier for this worker instance within the Redis Consumer Group (`categorization-workers`). |
 | `ML_MODEL_STORE_URL`        | TODO                          | The network address (URL/path) where the classification model weights are loaded from.                 |
 | `PROD_DB_CONNECTION_STRING` | TODO                          | The connection string for the authoritative Production Relational Database.                            |
+
+## Updating dependency
+
+Select the wheel that you want to update to, e.g.,
+
+```bash
+rm uv.lock
+uv pip install --force-reinstall ./dist/outpost_etl_core-0.1.1-py3-none-any.whl
+uv sync --find-links ./dist
+```

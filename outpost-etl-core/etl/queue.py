@@ -18,7 +18,7 @@ class TaskQueueRepositoryInterface(ABC):
         pass
 
     @abstractmethod
-    def recover_stuck_tasks(self, max_idle_ms: int, max_retries: int, batch_size: int) -> tuple[
+    def recover_stuck_tasks(self, max_idle_ms: int, expiry_time_ms: int, max_retries: int, batch_size: int) -> tuple[
         list[tuple[str, TaskType]],
         list[tuple[str, TaskType]]
     ]:
@@ -148,7 +148,13 @@ class RedisTaskQueueRepository(TaskQueueRepositoryInterface):
             return self.redis_connection.xack(self.stream_key, self.group_name, *message_ids)  
         return 0
 
-    def recover_stuck_tasks(self, max_idle_ms: int, max_retries: int, batch_size: int) -> tuple[
+    def recover_stuck_tasks(
+        self, 
+        max_idle_ms: int, 
+        expiry_time_ms: int,
+        max_retries: int, 
+        batch_size: int
+    ) -> tuple[
         list[tuple[str, TaskType]], 
         list[tuple[str, TaskType]]
     ]:
@@ -168,9 +174,17 @@ class RedisTaskQueueRepository(TaskQueueRepositoryInterface):
             message_id = entry['message_id'].decode('utf-8') 
             delivery_count = entry['times_delivered']
             idle_time_ms = entry['time_since_delivered']
-            if (idle_time_ms > max_idle_ms) and (delivery_count > max_retries):
+            if idle_time_ms > expiry_time_ms:
+                # If a message is too old, always retire it OR 
+                LOGGER.info(f"Flagging {entry} for DLQ because {idle_time_ms} > {expiry_time_ms}")
+                message_ids_to_dlq.append(message_id)
+            elif delivery_count > max_retries:
+                # If a message has been retried too many times, retire it
+                LOGGER.info(f"Flagging {entry} for DLQ because of retry limit")
                 message_ids_to_dlq.append(message_id)
             elif idle_time_ms > max_idle_ms:
+                # If a message is stale, but still relevant, retry it
+                LOGGER.info(f"Claiming stale message {entry}, will attempt a retry")
                 message_ids_to_claim.append(message_id)
         dlq_tasks_data = []
         if message_ids_to_dlq:

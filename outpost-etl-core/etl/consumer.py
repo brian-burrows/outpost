@@ -229,7 +229,7 @@ class TaskProcessingManager(TaskProcessingManagerInterface):
             except Exception as e:
                 failed_tasks.append(task)
                 failed_message_ids.append(msg_id)
-                LOGGER.error(f"Task {msg_id} failed with unhandled exception: {e}")
+                LOGGER.error(f"Task {msg_id} failed with unhandled exception: {e}, sending to DLQ")
                 continue
         self._acknowledge_tasks(messages_to_ack)
         self._send_tasks_to_dlq_and_acknowledge(
@@ -246,10 +246,22 @@ class TaskProcessingManager(TaskProcessingManagerInterface):
             self.task_queue.dequeue_tasks(count=batch_size, block_ms = block_ms)
         )
 
-    def get_and_process_stuck_tasks(self, max_idle_ms: int, max_retries: int, batch_size: int) -> tuple[
+    def get_and_process_stuck_tasks(self, max_idle_ms: int, expiry_time_ms: int, max_retries: int, batch_size: int) -> tuple[
         dict[str, Any],
         list[TaskType]
     ]:
-        tasks_to_retry, tasks_to_discard = self.task_queue.recover_stuck_tasks(max_idle_ms, max_retries, batch_size)
-        self._acknowledge_tasks([task_id for task_id, _ in tasks_to_discard])
+        tasks_to_retry, tasks_to_discard = self.task_queue.recover_stuck_tasks(
+            max_idle_ms=max_idle_ms, 
+            expiry_time_ms=expiry_time_ms,
+            max_retries=max_retries, 
+            batch_size=batch_size
+        )
+        task_ids_to_discard = []
+        _tasks_to_discard = []
+        for task_id, task in tasks_to_discard:
+            task_ids_to_discard.append(task_id)
+            _tasks_to_discard.append(task)
+        LOGGER.info(f"Discarding {task_ids_to_discard} by sending them to DLQ and acknoweldging them")
+        self._send_tasks_to_dlq_and_acknowledge(tasks_to_dlq = _tasks_to_discard, message_ids_to_acknowledge=task_ids_to_discard)
+        LOGGER.info(f"Retrying {tasks_to_retry}")
         return self._process_tasks(tasks_to_retry)

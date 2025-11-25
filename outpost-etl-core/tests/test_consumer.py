@@ -1,4 +1,5 @@
 import logging
+import time
 from unittest.mock import MagicMock
 
 import pybreaker
@@ -7,7 +8,7 @@ from tenacity import Retrying, stop_after_attempt
 
 from etl.consumer import TaskConsumer, TaskProcessingManager
 from etl.exceptions import DuplicateTaskError, RateLimitExceededError
-from etl.queue import TaskQueueRepositoryInterface
+from etl.queue import RedisTaskQueueRepository, TaskQueueRepositoryInterface
 
 logger = logging.getLogger(__name__)
 
@@ -106,3 +107,196 @@ def test_get_and_process_batch_flow_control(
     # Verification of internal calls to DLQ (sanity check)
     assert manager_with_dlq.dead_letter_queue.enqueue_tasks.call_count == 0 # We mocked _send_tasks...
     assert mock_task_queue.acknowledge_tasks.call_count == 0 # We mocked _acknowledge_tasks
+
+def test_get_and_process_stuck_messages_discard_by_expiry(
+    redis_client, 
+    sample_task_factory, 
+    test_task_model
+):
+    """
+    Tests that tasks which have been idle longer than expiry_time_ms 
+    are correctly flagged for DLQ (discarded) and acknowledged, 
+    resulting in an empty PEL.
+    """
+    
+    STREAM_KEY = "test_stuck_expiry_stream"
+    GROUP_NAME = "TEST_GROUP_EXPIRE"
+    CONSUMER_NAME = "TEST_CONSUMER_EXPIRE_1"
+    TASK_COUNT = 10
+    task_queue = RedisTaskQueueRepository(
+        client=redis_client,
+        stream_key=STREAM_KEY,
+        task_model=test_task_model,
+        group_name=GROUP_NAME,
+        consumer_name=CONSUMER_NAME,
+    )
+    # Use a dummy consumer/executable since we are testing queue management, not execution
+    def successful_func(task):
+        pass
+
+    consumer = TaskConsumer(executable=successful_func)
+    manager = TaskProcessingManager(
+        task_queue=task_queue,
+        task_consumer=consumer,
+    )
+    # Create Stuck Messages in the PEL
+    tasks = sample_task_factory(num_tasks=TASK_COUNT)
+    task_queue.enqueue_tasks(tasks) # Add to stream
+    dequeued_tasks = task_queue.dequeue_tasks(TASK_COUNT, block_ms=100) # Claim by user
+    assert len(dequeued_tasks) == TASK_COUNT, "Tasks should be successfully dequeued"
+    # We want the task's idle time to exceed the expiry time.
+    idle_delay_seconds = 0.1 
+    time.sleep(idle_delay_seconds) 
+    # Configuration:
+    # expiry_time_ms: 100ms (Much less than 500ms sleep, so all tasks should be DISCARDED)
+    # max_idle_ms: High value (Ensures we hit expiry first, not just basic reclaim)
+    # max_retries: 10 (Ensures we hit expiry before max retries, though expiry is primary trigger)
+    max_idle_ms = 5000 
+    expiry_time_ms = 100
+    max_retries = 10
+    batch_size = 10
+    # Run the manager to process the stuck tasks
+    retried_tasks, failed_tasks = manager.get_and_process_stuck_tasks(
+        max_idle_ms=max_idle_ms, 
+        expiry_time_ms=expiry_time_ms,
+        max_retries=max_retries,
+        batch_size=batch_size
+    )
+    print(f"TASKS RETRIED = {retried_tasks}")
+    # A. Verify the tasks were correctly categorized by the manager
+    # All 10 tasks should have been flagged for DLQ/discarded because idle_delay_seconds > expiry_time_ms
+    assert len(retried_tasks) == 0, "No tasks should be retried (claimed) as they are expired."
+    assert len(failed_tasks) == 0, "No tasks should have been retried (and failed) as they are expired."
+    # B. Verify that the acknowledgement successfully cleared the PEL
+    pel_info = redis_client.xpending(STREAM_KEY, GROUP_NAME)
+    assert pel_info['pending'] == 0, "The Pending Entry List (PEL) should be empty after processing expired tasks."
+
+
+def test_get_and_process_stuck_messages(
+    redis_client, 
+    sample_task_factory, 
+    test_task_model
+):
+    """
+    Tests that tasks which have been idle longer than expiry_time_ms 
+    are correctly flagged for DLQ (discarded) and acknowledged, 
+    resulting in an empty PEL.
+    """
+    STREAM_KEY = "test_stuck_retry_stream"
+    GROUP_NAME = "TEST_GROUP_EXPIRE"
+    CONSUMER_NAME = "TEST_CONSUMER_EXPIRE_1"
+    TASK_COUNT = 10
+    task_queue = RedisTaskQueueRepository(
+        client=redis_client,
+        stream_key=STREAM_KEY,
+        task_model=test_task_model,
+        group_name=GROUP_NAME,
+        consumer_name=CONSUMER_NAME,
+    )
+    # Use a dummy consumer/executable since we are testing queue management, not execution
+    def successful_func(task):
+        pass
+
+    consumer = TaskConsumer(executable=successful_func)
+    manager = TaskProcessingManager(
+        task_queue=task_queue,
+        task_consumer=consumer,
+    )
+    # Create Stuck Messages in the PEL
+    tasks = sample_task_factory(num_tasks=TASK_COUNT)
+    task_queue.enqueue_tasks(tasks) # Add to stream
+    dequeued_tasks = task_queue.dequeue_tasks(TASK_COUNT, block_ms=100) # Claim by user
+    assert len(dequeued_tasks) == TASK_COUNT, "Tasks should be successfully dequeued"
+    # We want the task's idle time to exceed the expiry time.
+    idle_delay_seconds = 0.1
+    time.sleep(idle_delay_seconds) 
+    # Configuration:
+    # we want a small idle time to trigger xclaim and retry
+    max_idle_ms = 100
+    expiry_time_ms = 50000
+    max_retries = 10
+    batch_size = 10
+    # Run the manager to process the stuck tasks
+    retried_tasks, failed_tasks = manager.get_and_process_stuck_tasks(
+        max_idle_ms=max_idle_ms, 
+        expiry_time_ms=expiry_time_ms,
+        max_retries=max_retries,
+        batch_size=batch_size
+    )
+    print(f"TASKS RETRIED = {retried_tasks}")
+    # A. Verify the tasks were correctly categorized by the manager
+    # All 10 tasks should have been flagged for DLQ/discarded because idle_delay_seconds > expiry_time_ms
+    assert len(retried_tasks) == 10, "No tasks should be retried (claimed) as they are expired."
+    assert len(failed_tasks) == 0, "No tasks should have been retried (and failed) as they are expired."
+    # B. Verify that the acknowledgement successfully cleared the PEL
+    pel_info = redis_client.xpending(STREAM_KEY, GROUP_NAME)
+    assert pel_info['pending'] == 0, "The Pending Entry List (PEL) should be empty after processing expired tasks."
+
+
+
+def test_get_and_process_stuck_messages_with_max_retries(
+    redis_client, 
+    sample_task_factory, 
+    test_task_model
+):
+    """
+    Tests that tasks which have been idle longer than expiry_time_ms 
+    are correctly flagged for DLQ (discarded) and acknowledged, 
+    resulting in an empty PEL.
+    """
+    STREAM_KEY = "test_stuck_retry_stream"
+    GROUP_NAME = "TEST_GROUP_EXPIRE"
+    CONSUMER_NAME = "TEST_CONSUMER_EXPIRE_1"
+    TASK_COUNT = 10
+    task_queue = RedisTaskQueueRepository(
+        client=redis_client,
+        stream_key=STREAM_KEY,
+        task_model=test_task_model,
+        group_name=GROUP_NAME,
+        consumer_name=CONSUMER_NAME,
+    )
+    # Use a dummy consumer/executable since we are testing queue management, not execution
+    def successful_func(task):
+        pass
+
+    consumer = TaskConsumer(executable=successful_func)
+    manager = TaskProcessingManager(
+        task_queue=task_queue,
+        task_consumer=consumer,
+    )
+    # Create Stuck Messages in the PEL
+    tasks = sample_task_factory(num_tasks=TASK_COUNT)
+    task_queue.enqueue_tasks(tasks) # Add to stream
+    dequeued_tasks = task_queue.dequeue_tasks(TASK_COUNT, block_ms=100) # Claim by user
+    assert len(dequeued_tasks) == TASK_COUNT, "Tasks should be successfully dequeued"
+    # We want the task's idle time to exceed the expiry time.
+    idle_delay_seconds = 0.1
+    time.sleep(idle_delay_seconds) 
+    # Configuration:
+    # we want a small idle time to trigger xclaim and retry
+    max_idle_ms = 1
+    expiry_time_ms = 50000
+    max_retries = 1
+    batch_size = 10
+    # Run the manager to process the stuck tasks
+    for i in range(3):
+        manager.task_queue.recover_stuck_tasks(
+            max_idle_ms=max_idle_ms, 
+            expiry_time_ms=expiry_time_ms,
+            max_retries=max_retries,
+            batch_size=batch_size
+        )
+    retried_tasks, failed_tasks = manager.get_and_process_stuck_tasks(
+        max_idle_ms=max_idle_ms, 
+        expiry_time_ms=expiry_time_ms,
+        max_retries=max_retries,
+        batch_size=batch_size
+    )
+    print(f"TASKS RETRIED = {retried_tasks}")
+    # A. Verify the tasks were correctly categorized by the manager
+    # All 10 tasks should have been flagged for DLQ/discarded because idle_delay_seconds > expiry_time_ms
+    assert len(retried_tasks) == 0, "No tasks should be retried (claimed) as they are expired."
+    assert len(failed_tasks) == 0, "No tasks should have been retried (and failed) as they are expired."
+    # B. Verify that the acknowledgement successfully cleared the PEL
+    pel_info = redis_client.xpending(STREAM_KEY, GROUP_NAME)
+    assert pel_info['pending'] == 0, "The Pending Entry List (PEL) should be empty after processing expired tasks."

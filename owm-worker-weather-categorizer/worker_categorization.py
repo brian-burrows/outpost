@@ -36,6 +36,7 @@ CONSUME_COUNT = 100
 CONSUME_BLOCK_MS = 1000
 CATEGORIZATION_MAX_RETRIES = 5
 CATEGORIZATION_MAX_IDLE_MS = 600000
+CATEGORIZATION_EXPIRY_TIME_MS = 2.16e+7
 CATEGORIZATION_REDIS_CONNECTION_POOL = redis.BlockingConnectionPool(
     host= CATEGORIZATION_REDIS_HOST,
     port= CATEGORIZATION_REDIS_PORT,
@@ -117,6 +118,7 @@ def main(catcher):
             # is essentially identical
             consumer.get_and_process_stuck_tasks(
                 max_idle_ms = CATEGORIZATION_MAX_IDLE_MS,
+                expiry_time_ms = CATEGORIZATION_EXPIRY_TIME_MS,
                 max_retries = CATEGORIZATION_MAX_RETRIES,
                 batch_size = CONSUME_COUNT,
             )
