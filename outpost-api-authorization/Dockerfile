@@ -1,33 +1,22 @@
-FROM python:3.13-slim-bookworm
+FROM golang:1.23-alpine AS builder
 
 WORKDIR /app
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    build-essential \
-    curl \
-    git \
-    && rm -rf /var/lib/apt/lists/*
+COPY go.mod .
+COPY go.sum .
 
-RUN pip install --upgrade pip setuptools wheel uv
+RUN go mod download
 
-COPY uv.lock pyproject.toml /app/
+COPY . .
 
-RUN uv sync --locked --no-dev
+RUN CGO_ENABLED=0 go build -o /outpost-api-authorization main.go
 
-COPY . /app
-RUN uv sync --locked --no-dev
+FROM alpine:latest
 
-RUN groupadd --system --gid 999 nonroot \
-    && useradd --system --gid 999 --uid 999 --create-home nonroot \
-    && chown -R nonroot:nonroot /app
+RUN apk --no-cache add ca-certificates
 
-USER nonroot
+WORKDIR /root/
 
-EXPOSE 8000
+COPY --from=builder /outpost-api-authorization .
 
-ENV PATH="/app/.venv/bin:$PATH"
-
-CMD ["/app/.venv/bin/gunicorn", "main:app", \
-    "--workers", "1", \
-    "--bind", "0.0.0.0:8000", \
-    "--worker-class", "uvicorn.workers.UvicornWorker"]
+CMD ["./outpost-api-authorization"]

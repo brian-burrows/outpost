@@ -167,12 +167,15 @@ services:
       context: ./outpost-api-authorization
       dockerfile: Dockerfile
     environment:
-      <<: *app_db_creds
-      DB_HOST: db
       REDIS_RATE_LIMITER_HOST: redis
       REDIS_RATE_LIMITER_PORT: 6379
+      MONGO_HOST: mongodb
+      MONGO_PORT: 27017
+      PORT: 8080 
+    ports:
+      - "8001:8080"
     depends_on:
-      - db
+      - mongodb
       - redis
 
   nginx:
@@ -186,6 +189,18 @@ services:
       - outpost-api-weather
       - outpost-api-authorization
 
+  mongodb:
+    image: mongo:latest
+    container_name: mongodb
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongodb_data:/data/db
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: admin
+      MONGO_INITDB_ROOT_PASSWORD: password
+    
+
 volumes:
   postgres_data:
   redis_data:
@@ -194,3 +209,4 @@ volumes:
   redisinsight_data:
   prometheus_data:
   grafana_data:
+  mongodb_data:
