@@ -1,33 +1,33 @@
 ## System Overview
 
-![](./docs/images/Outpost-1.png)
+![](./docs/images/header-image.png)
 
-![](./docs/images/Outpost-2.png)
+![](./docs/images/project-description.png)
 
-![](./docs/images/Outpost-3.png)
+![](./docs/images/slide-overview.png)
 
-![](./docs/images/Outpost-4.png)
+![](./docs/images/functional-reqs.png)
 
-![](./docs/images/Outpost-5.png)
+![](./docs/images/nonfunctional-reqs.png)
 
 ## High Level Design
 
-![](./docs/images/Outpost-6.png)
+![](./docs/images/high-level-components.png)
 
-![](./docs/images/Outpost-11.png)
+![](./docs/images/high-level-diagram.png)
 
 ## Detailed Design
 
-![](./docs/images/Outpost-12.png)
+![](./docs/images/scheduler-service-diagram.png)
 
-![](./docs/images/Outpost-13.png)
+![](./docs/images/ingestion-service-diagram.png)
 
-![](./docs/images/Outpost-14.png)
+![](./docs/images/categorization-service-diagram.png)
 
-![](./docs/images/Outpost-17.png)
+![](./docs/images/weather-service-diagram.png)
 
-![](./docs/images/Outpost-18.png)
+![](./docs/images/auth-service-diagram.png)
 
 ## Future Work
 
-![](./docs/images/Outpost-15.png)
+![](./docs/images/future-work.png)
