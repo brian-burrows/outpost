@@ -1,12 +1,14 @@
 import json
 import logging
 from abc import ABC, abstractmethod
-from typing import Any, Type
+from typing import Any, Type, TypeVar
 from uuid import UUID
 
 import redis
 
-from etl.tasks import TaskType
+from etl.tasks import BaseTask
+
+TaskType = TypeVar("TaskType", bound=BaseTask)
 
 LOGGER = logging.getLogger(__name__)
 

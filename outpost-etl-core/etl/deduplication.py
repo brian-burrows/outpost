@@ -6,8 +6,6 @@ from uuid import UUID
 import redis
 from redis.exceptions import ConnectionError as RedisConnectionError
 
-from etl.exceptions import DuplicateTaskError
-
 T = TypeVar('T') 
 F = TypeVar('F', bound=Callable[..., Any])
 
@@ -42,7 +40,7 @@ class DeduplicationCacheInterface(ABC):
         Returns
         -------
         int : 1 if the operation was successful.
-        
+
         """
         pass
     
@@ -58,7 +56,7 @@ class DeduplicationCacheInterface(ABC):
         Returns
         -------
         int : 1 if the operation was successful.
-        
+
         """
         pass
 
