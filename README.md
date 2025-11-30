@@ -24,7 +24,6 @@
 
 ![](./docs/images/Outpost-14.png)
 
-<<<<<<< HEAD
 ![](./docs/images/Outpost-16.png)
 
 ![](./docs/images/Outpost-17.png)
@@ -33,8 +32,4 @@
 
 ## Future Work
 
-=======
-## Future Work
-
->>>>>>> 491f023791285761a9bb709e95d1319f339b396d
 ![](./docs/images/Outpost-15.png)
