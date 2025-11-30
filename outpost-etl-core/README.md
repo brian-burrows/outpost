@@ -13,10 +13,10 @@ Users can implement these interfaces to integrate any external service (e.g., Ka
 
 ### A. Persistence and State Interfaces
 
-| Interface                         | Purpose                                                                                                              | Essential Methods                                                                               |
-| :-------------------------------- | :------------------------------------------------------------------------------------------------------------------- | :---------------------------------------------------------------------------------------------- |
-| **`TaskOutboxInterface`**         | Defines persistent storage for tasks waiting to be queued. It is the core contract for the **Transactional Outbox**. | `insert_tasks()`, `select_pending_tasks()`, `update_tasks_status()`, `delete_completed_tasks()` |
-| **`DeduplicationCacheInterface`** | Defines the contract for deduplicating tasks during processing.                                                      | `is_processed(task_id)`, `record_processed(task_id)`                                            |
+| Interface                         | Purpose                                                                                                              | Essential Methods                                                                                                                        |
+| :-------------------------------- | :------------------------------------------------------------------------------------------------------------------- | :--------------------------------------------------------------------------------------------------------------------------------------- |
+| **`TaskOutboxInterface`**         | Defines persistent storage for tasks waiting to be queued. It is the core contract for the **Transactional Outbox**. | `insert_tasks()`, `select_pending_tasks()`, `update_tasks_status()`, `delete_completed_tasks()`, `create_task_table`, `delete_old_tasks` |
+| **`DeduplicationCacheInterface`** | Defines the contract for deduplicating tasks during processing.                                                      | `is_processed(task_id)`, `record_processed(task_id)`, `discard(task_id)`                                                                 |
 
 ### B. Messaging and Control Interfaces
 
@@ -24,6 +24,7 @@ Users can implement these interfaces to integrate any external service (e.g., Ka
 | :--------------------------------- | :----------------------------------------------------------------------------------------------------------- | :----------------------------------------------------------------------------------- |
 | **`TaskQueueRepositoryInterface`** | Defines message broker operations, spanning both production and consumption.                                 | `enqueue_tasks()`, `dequeue_tasks()`, `acknowledge_tasks()`, `recover_stuck_tasks()` |
 | **`RateLimiterInterface`**         | Defines a contract for throttling execution to protect downstream services or adhere to external API limits. | `allow_request()`                                                                    |
+| `TaskProcessingFunctionInterface`  | Defines a contract for executing a function that consumes a `TaskType` message.                              | `execute(task)`, `execute_many(tasks)`                                               |
 
 ---
 
@@ -47,8 +48,8 @@ These classes implement the interfaces using common infrastructure and are ready
 
 These classes house the complex resilience logic and are configured by injecting the appropriate DAO instances.
 
-| Class                       | Role in Pipeline                                                                                                                                                                                      | Key DAO Dependencies                                  |
-| :-------------------------- | :---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | :---------------------------------------------------- |
-| **`TaskProducerManager`**   | **Producer Orchestrator:** Manages the transactional logic, ensuring tasks are persisted locally (`TaskOutboxInterface`) before being flushed to the external queue (`TaskQueueRepositoryInterface`). | `TaskOutboxInterface`, `TaskQueueRepositoryInterface` |
-| **`TaskConsumer`**          | **Worker Wrapper:** Wraps the user's core business function, applying resilience layers such as retries, circuit breaking, and rate limiting based on injected dependencies.                          | `RateLimiterInterface` (optional)                     |
-| **`TaskProcessingManager`** | **Consumer Orchestrator:** Manages the overall worker loop, handling task fetching, acknowledgment, and error recovery (like reclaiming stuck messages).                                              | `TaskQueueRepositoryInterface`, `TaskConsumer`        |
+| Class                       | Role in Pipeline                                                                                                                                                                                      | Key DAO Dependencies                                                 |
+| :-------------------------- | :---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | :------------------------------------------------------------------- |
+| **`TaskProducerManager`**   | **Producer Orchestrator:** Manages the transactional logic, ensuring tasks are persisted locally (`TaskOutboxInterface`) before being flushed to the external queue (`TaskQueueRepositoryInterface`). | `TaskOutboxInterface`, `TaskQueueRepositoryInterface`                |
+| **`TaskConsumer`**          | **Worker Wrapper:** Wraps the user's core business function, applying resilience layers such as retries, circuit breaking, and rate limiting based on injected dependencies.                          | `TaskProcessingFunctionInterface`, `RateLimiterInterface` (optional) |
+| **`TaskProcessingManager`** | **Consumer Orchestrator:** Manages the overall worker loop, handling task fetching, acknowledgment, and error recovery (like reclaiming stuck messages).                                              | `TaskQueueRepositoryInterface`, `TaskConsumer`                       |

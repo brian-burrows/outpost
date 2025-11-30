@@ -2,7 +2,6 @@ import datetime
 import logging
 from abc import ABC, abstractmethod
 from typing import Any, Callable, TypeVar
-from etl.exceptions import RateLimitExceededError
 
 from redis import StrictRedis
 from redis.exceptions import ConnectionError as RedisConnectionError
@@ -13,9 +12,17 @@ F = TypeVar('F', bound=Callable[..., Any])
 LOGGER = logging.getLogger(__name__)
 
 class RateLimiterInterface(ABC):
+    """Interface for consuming an allowance unit in a rate-limiting system."""
     @abstractmethod
     def allow_request(self) -> bool:
-        """Attempts to consume one unit of allowance. Returns True if allowed, False otherwise."""
+        """Attempts to consume one unit of allowance.
+
+        Returns
+        -------
+        bool
+            True if the request is allowed (within the limit), False otherwise.
+            
+        """
         pass
 
 class RedisDailyRateLimiterDao(RateLimiterInterface):
@@ -26,6 +33,17 @@ class RedisDailyRateLimiterDao(RateLimiterInterface):
         base_key: str, 
         max_requests: int,
     ):
+        """Initializes the fixed-window rate limiter DAO.
+
+        Parameters
+        ----------
+        client : StrictRedis
+            The connected Redis client instance.
+        base_key : str
+            The base key used for the rate limit counter (e.g., 'service:api:limit').
+        max_requests : int
+            The maximum number of requests allowed per 24-hour window.
+        """
         self.client = client
         self.max_requests = max_requests
         self.base_key = base_key
@@ -38,6 +56,16 @@ class RedisDailyRateLimiterDao(RateLimiterInterface):
         return f"{self.base_key}:{today_utc}"
 
     def allow_request(self) -> bool:
+        """Attempts to consume one unit of allowance using Redis's atomic INCR.
+        
+        If the counter is initialized (count == 1), it sets the TTL to 48 hours.
+
+        Returns
+        -------
+        bool
+            True if the request count is less than or equal to `max_requests`, False otherwise.
+
+        """
         key = self._get_key_for_today()
         try:
             count = self.client.incr(key)
@@ -54,17 +82,12 @@ class RedisDailyRateLimiterDao(RateLimiterInterface):
         
 class DummyRateLimiter(RateLimiterInterface):
     def allow_request(self):
+        """Dummy implementation that always allows the request.
+        
+        Returns
+        -------
+        bool
+            Always True.
+
+        """
         return True
-    
-def with_rate_limiting(rate_limiter: 'RateLimiterInterface') -> Callable[[F], F]:
-    """Decorator to enforce a rate limit before executing the target function."""
-    def decorator(func: F) -> F:
-        def wrapper(task: T) -> Any:
-            if not rate_limiter.allow_request():
-                LOGGER.warning(
-                    f"Rate limit exceeded for task ID {task.task_id}. Raising error for PEL retry."
-                )
-                raise RateLimitExceededError(f"Rate limit exceeded for task ID {task.task_id}.")
-            return func(task)
-        return wrapper
-    return decorator

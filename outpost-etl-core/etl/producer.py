@@ -1,5 +1,4 @@
 import logging
-from typing import List
 from uuid import UUID
 
 from redis.exceptions import ConnectionError as RedisConnectionError
@@ -35,16 +34,23 @@ class TaskProducerManager:
         self.task_queue = task_queue
         self.storage = storage
 
-    @retry(
+    @retry( # TODO: make retry logic configurable following example in consumer.py
         wait=wait_random_exponential(multiplier=1, min=1, max=8),
         stop=stop_after_attempt(2),
         reraise=True
     )
-    def produce_batch_to_disk(self, tasks: List[TaskType]) -> List[UUID]:
-        """
-        Main thread API: Saves new tasks locally with status 'PENDING'.
-        The background flusher thread handles the enqueueing later.
-        Returns the Task UUIDs that were saved to disk.
+    def produce_batch_to_disk(self, tasks: list[TaskType]) -> list[UUID]:
+        """Writes a list of `TaskType` instances to the underlying storage provided.
+
+        Parameters
+        ----------
+        tasks : list[TaskType]
+            A list of tasks to write to disk.
+        
+        Returns
+        -------
+        A list of task UUIDs (task.task_ids) that were successfully written to the data storage.
+
         """
         if not tasks:
             return []
@@ -57,18 +63,44 @@ class TaskProducerManager:
             raise
     
     @retry(
-        retry=retry_if_exception_type(RedisConnectionError),  # todo: Make this generic
+        retry=retry_if_exception_type(RedisConnectionError),
         wait=wait_random_exponential(multiplier=1, min=1, max=60), 
         stop=stop_after_attempt(10), 
         reraise=True
     )
-    def _attempt_flush(self, tasks):
+    def _attempt_flush(self, tasks: list[TaskType]) -> int:
+        """Attempts to enqueue tasks to the task queue, and then remove them from persistant storage.
+        
+        Parameters
+        ----------
+        tasks : list[TaskType]
+            A list of tasks to send to the target task queue, and subsequently remove from storage.
+
+        Returns
+        -------
+        int
+            The number of tasks sent to the message queue. Assumes the `task_queue` handling 
+            and storage deletion are all or nothing operations (independently).
+
+        """
         submitted_task_ids = self.task_queue.enqueue_tasks(tasks)
         self.storage.update_tasks_status(submitted_task_ids)
         return len(tasks)
 
     def flush_tasks_to_queue(self, batch_size: int = 100) -> int:
-        """ Flush tasks from persistent storage to the message queue"""
+        """Flush tasks from persistent storage to the message queue.
+        
+        Parameters
+        ----------
+        batch_size : int 
+            The maximum number of tasks to pull from storage.
+
+        Returns
+        -------
+        int
+            The number of tasks flushed to the queue.
+
+        """
         tasks = self.storage.select_pending_tasks(batch_size)
         if not tasks:
             return 0
@@ -81,5 +113,13 @@ class TaskProducerManager:
             raise e
 
     def clear_tasks(self, expire_time_seconds: int) -> None:
+        """Remove completed and expired tasks from underlying storage.
+        
+        Parameters
+        ----------
+        expire_time_seconds : int 
+            The minimum age (in seconds) of a completed task before it is eligible for deletion.
+
+        """
         self.storage.delete_old_tasks(expire_time_seconds=expire_time_seconds)
         self.storage.delete_completed_tasks()

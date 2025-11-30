@@ -4,7 +4,7 @@ import threading
 import time
 import uuid
 from abc import ABC, abstractmethod
-from typing import Any, List, Type
+from typing import Any, Type
 
 from etl.tasks import UUID, TaskType
 
@@ -33,17 +33,17 @@ class TaskOutboxInterface(ABC):
         pass
 
     @abstractmethod
-    def insert_tasks(self, tasks: List[TaskType]) -> None:
+    def insert_tasks(self, tasks: list[TaskType]) -> None:
         """Inserts tasks into local storage with an initial 'PENDING' state."""
         pass
 
     @abstractmethod
-    def select_pending_tasks(self, limit: int) -> List[TaskType]:
+    def select_pending_tasks(self, limit: int) -> list[TaskType]:
         """Selects tasks ready for processing, i.e., in 'PENDING' state."""
         pass
     
     @abstractmethod
-    def update_tasks_status(self, task_ids: List[UUID]) -> None:
+    def update_tasks_status(self, task_ids: list[UUID]) -> None:
         """Updates the status of tasks after a successful operation to 'QUEUED'."""
         pass
         
@@ -53,7 +53,7 @@ class TaskOutboxInterface(ABC):
         pass
 
     @abstractmethod 
-    def delete_old_tasks(self, expire_time_seconds: int):
+    def delete_old_tasks(self, expire_time_seconds: int) -> None:
         """Removes tasks that have expired."""
         pass
 
@@ -63,6 +63,20 @@ class SqliteTaskOutbox(TaskOutboxInterface):
     TIMESTAMP_COLUMN = "inserted_at"
     STATUS_COLUMN = "status"
     def __init__(self, db_path: str, task_type: Type[TaskType]):
+        """Build an on-disk Sqlite Outbox for tasks.
+        
+        Creates a task table in the specified SQLite database corresponding to the
+        specified TaskType, and provides methods to interact with the underlying 
+        data storage.
+
+        Parameters
+        ----------
+        db_path : str 
+            A path to where the data in the Sqlite should be stored on disk.
+        task_type : Type[TaskType]
+            The type of object that will be serialized and deserialized.
+
+        """
         # TODO: Make this support pagination correctly
         super().__init__(db_connection=db_path, task_type=task_type)
         self.table_name = self.task_type.__name__
@@ -70,8 +84,7 @@ class SqliteTaskOutbox(TaskOutboxInterface):
         self.create_task_table()
 
     def create_task_table(self) -> None:
-        """
-        Creates a simplified table with columns for ID, JSON data, Status, and Timestamp.
+        """Creates a simplified table with columns for ID, JSON data, Status, and Timestamp.
         """
         conn = None
         with self.lock:
@@ -81,8 +94,8 @@ class SqliteTaskOutbox(TaskOutboxInterface):
                 sql = f"""
                     CREATE TABLE IF NOT EXISTS {self.table_name} (
                         task_id TEXT PRIMARY KEY,
-                        {self.DATA_COLUMN} TEXT NOT NULL,  -- 💡 Stores the model_dump_json string
-                        {self.TIMESTAMP_COLUMN} REAL NOT NULL, -- 💡 Stores insertion time (seconds since epoch)
+                        {self.DATA_COLUMN} TEXT NOT NULL,  -- Stores the model_dump_json string
+                        {self.TIMESTAMP_COLUMN} REAL NOT NULL, -- Stores insertion time (seconds since epoch)
                         {self.STATUS_COLUMN} TEXT NOT NULL DEFAULT 'PENDING'
                     );
                 """
@@ -97,7 +110,7 @@ class SqliteTaskOutbox(TaskOutboxInterface):
                 if conn:
                     conn.close()
     
-    def insert_tasks(self, tasks: List[TaskType]) -> None:
+    def insert_tasks(self, tasks: list[TaskType]) -> None:
         """Inserts tasks as JSON strings along with an insertion timestamp."""
         LOGGER.debug(f"Attempting to insert {len(tasks)} tasks into {self.table_name}")
         conn = None
@@ -128,8 +141,20 @@ class SqliteTaskOutbox(TaskOutboxInterface):
                 if conn:
                     conn.close()
 
-    def select_pending_tasks(self, limit: int) -> List[TaskType]:
-        """Selects tasks ready for processing and reconstructs the Pydantic model from JSON."""
+    def select_pending_tasks(self, limit: int) -> list[TaskType]:
+        """Selects tasks ready for processing and reconstructs the Pydantic model from JSON.
+        
+        Parameters
+        ----------
+        limit : int 
+            The maximum number of tasks that can be fetched from the Sqlite interface.
+
+        Returns
+        -------
+        list[TaskType]
+            A list of task instances as fetched from the underlying data store.
+
+        """
         conn = None
         with self.lock:
             selected_tasks = []
@@ -160,8 +185,15 @@ class SqliteTaskOutbox(TaskOutboxInterface):
                 if conn:
                     conn.close()
 
-    def update_tasks_status(self, task_ids: List[UUID]) -> None:
-        """Updates the status to 'QUEUED' for tasks after a successful operation."""
+    def update_tasks_status(self, task_ids: list[UUID]) -> None:
+        """Updates the status to 'QUEUED' for tasks after a successful operation.
+        
+        Parameters
+        ----------
+        task_ids : list[UUID]
+            A list of UUIDs (task_ids) used to identify tasks in the database.
+
+        """
         conn = None
         with self.lock:
             try:
@@ -206,7 +238,7 @@ class SqliteTaskOutbox(TaskOutboxInterface):
                 if conn:
                     conn.close()
 
-    def delete_old_tasks(self, expire_time_seconds: int):
+    def delete_old_tasks(self, expire_time_seconds: int) -> None:
         LOGGER.info(f"Deleting tasks older than {expire_time_seconds}")
         conn = None
         with self.lock:
