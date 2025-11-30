@@ -6,6 +6,8 @@ from uuid import UUID
 import redis
 from redis.exceptions import ConnectionError as RedisConnectionError
 
+from etl.exceptions import DuplicateTaskError
+
 T = TypeVar('T') 
 F = TypeVar('F', bound=Callable[..., Any])
 
@@ -109,3 +111,20 @@ class RedisDeduplicationCacheRepository(DeduplicationCacheInterface):
         except Exception as e:
             LOGGER.error(f"Unhandled exception removing record from Redis set: {e}")
             raise e
+        
+def with_deduplication_caching(cache_dao: DeduplicationCacheInterface) -> Callable[[F], F]:
+    """Decorator to skip execution if a task_id is found in the DAO."""
+    def decorator(func: F) -> F:
+        def wrapper(task: T) -> Any:
+            task_id = task.task_id
+            if cache_dao.is_processed(task_id):
+                raise DuplicateTaskError(f"Task ID {task_id} has already been processed")
+            try:
+                response = func(task)
+                cache_dao.record_processed(task_id)
+                return response
+            except Exception as e:
+                cache_dao.discard(task_id)
+                raise e
+        return wrapper
+    return decorator
