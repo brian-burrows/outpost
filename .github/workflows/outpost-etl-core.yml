@@ -5,7 +5,7 @@ on:
     types:
       - ready_for_review
     paths:
-      - "outpost-ecl-core/**"
+      - "outpost-etl-core/**"
 jobs:
   test:
     runs-on: ubuntu-latest
