@@ -90,7 +90,8 @@ def test_get_and_process_batch_flow_control(
     ]
     responses, failed_tasks = manager_with_dlq.get_and_process_batch(4)
     assert mock_consumer.execute.call_count == 4
-    assert responses == {"msg-1": "Hello World"}
+    print(responses)
+    assert responses == {task_list[1].task_id: "Hello World"}
     # Only the ValueError (msg-2) should be treated as failed/DLQ candidate
     assert len(failed_tasks) == 1
     assert failed_tasks[0] == task_list[2] # Task corresponding to msg-2

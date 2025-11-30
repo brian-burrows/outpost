@@ -1,3 +1,7 @@
+"""Contains core logic for defining Consumers of message queues.
+
+
+"""
 import logging
 from abc import ABC, abstractmethod
 from contextlib import nullcontext
@@ -17,6 +21,7 @@ from etl.limiter import DummyRateLimiter, RateLimiterInterface
 from etl.queue import TaskQueueRepositoryInterface
 from etl.tasks import TaskType
 
+# Create a Retrying instance that does nothing, avoiding `None` handling
 BASE_RETRYING = Retrying(
     retry=retry_unless_exception_type(
         (RateLimitExceededError, CircuitBreakerError, DuplicateTaskError)
@@ -26,14 +31,18 @@ BASE_RETRYING = Retrying(
 )
 
 
-class TaskProcessingFunctionInterface():
+class TaskProcessingFunctionInterface(ABC):
+    @abstractmethod
     def execute(self, task: TaskType) -> Any:
+        """Processes a single `task` instance of type `TaskType`"""
         pass 
 
+    @abstractmethod
     def execute_many(self, tasks: list[TaskType]) -> list[Any]:
+        """Processes a list of `task` instances of type `TaskType`"""
         pass
 
-class TaskConsumer():
+class TaskConsumer(TaskProcessingFunctionInterface):
     def __init__(
         self, 
         executable: Callable[[TaskType], Any],
@@ -54,8 +63,8 @@ class TaskConsumer():
             by the 'pybreaker' package.
         retrying : Retrying
             A class instance that implements the Retrying interface as defined by 
-            the 'tenacity' package. Reraise must be true if downstream processes
-            will handle errors. 
+            the 'tenacity' package. Reraise must be set to `True`, otherwise an
+            exception will be raised.
 
         """
         if retrying.reraise is False:
@@ -68,6 +77,18 @@ class TaskConsumer():
         self.retrying = retrying
 
     def execute(self, task: TaskType) -> Any:
+        """Evaluates the instances `executable` with instance-specific resource handling.
+        
+        This function will attempt to execute `self.executable` on the provided `task` instance.
+        Upon failure, it will retry based on the specified retry policy. The following will be
+        treated as individual failures (i.e., will trigger a retry, unless configured otherwise):
+            - Rate limit exceeded, based on the supplied rate limiting policy.
+            - Circuit breaker has tripped, based on the supplied circuit breaker.
+            - Any exceptions raised by `executable`
+        The retry behavior, including the specific exceptions that result in a retry, 
+        is determined by the configured retrying policy.
+
+        """
         breaker = nullcontext() if self.circuit_breaker is None else self.circuit_breaker.calling()
         for attempt in self.retrying:
             with attempt:
@@ -77,21 +98,93 @@ class TaskConsumer():
                     return self.executable(task)
     
     def execute_many(self, tasks: list[TaskType]) -> list[Any]:
+        """Evaluates the instances `executable` with instance-specific resource handling.
+        
+        This function will attempt to execute `self.executable` on the provided `task` instances.
+        Upon failure, it will retry based on the specified retry policy. The following will be
+        treated as individual failures (i.e., will trigger a retry, unless configured otherwise):
+            - Rate limit exceeded, based on the supplied rate limiting policy.
+            - Circuit breaker has tripped, based on the supplied circuit breaker.
+            - Any exceptions raised by `executable`
+        The retry behavior, including the specific exceptions that result in a retry.
+        If any task fails, the entire result will be discarded.
+
+        """
         return [self.execute(task) for task in tasks]
 
 
 LOGGER = logging.getLogger(__name__)
 
 class TaskProcessingManagerInterface(ABC):
+    """Provides an interface for message consumption from a message queue."""
     @abstractmethod
     def get_and_process_batch(self, batch_size: int, block_ms: int) -> tuple[
-        dict[str, any],
+        dict[str, Any],
         list[TaskType]
     ]:
+        """Provides blocking, batched message queue consumption.
+        
+        Parameters
+        ----------
+        batch_size : int 
+            The maximum number of messages to deque in a single request.
+        block_ms : int
+            Number of milliseconds to block waiting for a batch of messages.
+        
+        Returns
+        -------
+        dict[str, Any] : 
+            A Dictionary containing the results of successfully processed messages.
+            The key is the task ID as provided by the processed task.
+            The value is the result of the message processing pipeline.
+        list[TaskType] :
+            A list of messages that failed to be processed correctly.
+
+        """
         pass
 
     @abstractmethod
-    def get_and_process_stuck_tasks(self, max_idle_ms: int, max_retries: int, batch_size: int):
+    def get_and_process_stuck_tasks(
+        self, 
+        max_idle_ms: int, 
+        expiry_time_ms: int, 
+        max_retries: int, 
+        batch_size: int
+    ) -> tuple[
+        dict[str, Any],
+        list[TaskType]
+    ]:
+        """Provides blocking, batched, message queue recovery of stuck tasks.
+
+        Parameters
+        ----------
+        max_idle_ms: int
+            The minimum amount of time between claiming a message and labeling that message as stuck.
+        expiry_time_ms: int
+            The maximum amount of time between message creation and message processing, before
+            a task is simply discarded.
+        max_retries: int
+            The maximum number of times a stuck message can be reclaimed before it is classified
+            as a poison pill.
+        batch_size: int
+            The number of claimed messages to fetch from the task queue.
+
+        Returns
+        -------
+        dict[str, Any] : 
+            A Dictionary containing the results of successfully processed messages.
+            The key is the task ID as provided by the processed Task.
+            The value is the result of the message processing pipeline.
+        list[TaskType] :
+            A list of messages that failed to be processed correctly.
+
+        Side Effect
+        -----------
+        Tasks that exceed the `expiry_time_ms` or `max_retries` are viewed as discarded, and do 
+        not appear in the `returns` statement. It is up to the concrete implementation of this
+        interface to decide on any side effects that occur.
+
+        """
         pass
 
 class TaskProcessingManager(TaskProcessingManagerInterface):
@@ -147,6 +240,12 @@ class TaskProcessingManager(TaskProcessingManagerInterface):
             If acknowledgement fails too many times, it will circuit break. 
             Tasks remain in queue and will be retried.
 
+        Parameters
+        ----------
+        messages_to_ack : list[str]
+            A list of message IDs (specified by `self.task_queue`) to be acknowledged
+            and removed from the task queue.
+
         """
         if messages_to_ack:
             breaker = nullcontext() if self.queue_breaker is None else self.queue_breaker.calling()
@@ -165,13 +264,20 @@ class TaskProcessingManager(TaskProcessingManagerInterface):
     ) -> None:
         """Acknowledge tasks after sending them to the DLQ.
 
-        If no DLQ is configured, tasks will be simple acknowledged.
+        If no DLQ is configured, tasks will be simple acknowledged and dropped.
         
         Failure cascade:
         1. If DLQ fails too many times, it will circuit break. We'll never acknowledge the tasks. Safe.
         2. If acknowledgement fails too many times, it will circuit break.
             Duplicate entries may be sent to the DLQ.
             Tasks will remain in `task_queue` in some fashion, and may be reprocessed.
+
+        Parameters
+        ----------
+        tasks_to_dlq : list[TaskType]
+            A list of tasks to send to the dead letter queue.
+        message_ids_to_acknowledge : list[str]
+            The set of message IDs, associated with `tasks_to_dlq`, to acknowledge.
 
         """
         if len(tasks_to_dlq) != len(message_ids_to_acknowledge):
@@ -193,7 +299,7 @@ class TaskProcessingManager(TaskProcessingManagerInterface):
                     LOGGER.info(f"Dropped {N} failed messaged")
                         
 
-    def _process_tasks(self, tasks: list[TaskType]) -> tuple[
+    def _process_tasks(self, tasks: list[tuple[str, TaskType]]) -> tuple[
         dict[str, Any],
         list[TaskType]
     ]:
@@ -203,6 +309,24 @@ class TaskProcessingManager(TaskProcessingManagerInterface):
             1. If `self.target` raises RateLimitExceededError, tasks will not be acknowledged.
                It is the responsibility of `target` to circuit break to avoid excessive retries.
             2. If `self.target` raises `DuplicateTaskError`, tasks acknowledgement will be attempted.
+
+        Parameters
+        ----------
+        tasks : list[tuple[str, TaskType]]
+            A list of tuples containing `(msg_id, TaskType)`, where `msg_id` is the internal message ID
+            needed to acknowledge tasks in the selected `task_queue` for the corresponding task.
+        
+        Returns
+        -------
+        dict[str, Any] : 
+            A list of successfully processed task results, keyed by `TaskType.task_id`.
+        list[TaskType] : 
+            A list of task instances that failed to process.
+
+        Side Effects:
+            - Successful tasks will be acknowledged in a batch.
+            - Failed tasks will be acknowledged and sent to the DLQ in a batch.
+
         """
         successful_responses: dict[str, Any] = {}
         failed_tasks: list[TaskType] = []
@@ -212,7 +336,7 @@ class TaskProcessingManager(TaskProcessingManagerInterface):
             try:
                 try:
                     response = self.task_consumer.execute(task)
-                    successful_responses[msg_id] = response
+                    successful_responses[task.task_id] = response
                     messages_to_ack.append(msg_id)
                     LOGGER.info(f"Task {msg_id} was successfully processed")
                 except CircuitBreakerError:
@@ -242,6 +366,29 @@ class TaskProcessingManager(TaskProcessingManagerInterface):
         dict[str, Any],
         list[TaskType]
     ]:
+        """Provides blocking, batched message queue consumption.
+        
+        Tasks will be dequeued from `self.task_queue`, and processed using the supplied
+        Task Consumer instance. Failed tasks will be automatically sent to a DLQ and
+        acknowledged. Successful tasks will be acknowledged.
+
+        Parameters
+        ----------
+        batch_size : int 
+            The maximum number of messages to deque in a single request.
+        block_ms : int
+            Number of milliseconds to block waiting for a batch of messages.
+
+        Returns
+        -------
+        dict[str, Any] : 
+            A Dictionary containing the results of successfully processed messages.
+            The key is the task ID as provided by the processed task.
+            The value is the result of the message processing pipeline.
+        list[TaskType] :
+            A list of messages that failed to be processed correctly.
+
+        """
         return self._process_tasks(
             self.task_queue.dequeue_tasks(count=batch_size, block_ms = block_ms)
         )
@@ -250,6 +397,35 @@ class TaskProcessingManager(TaskProcessingManagerInterface):
         dict[str, Any],
         list[TaskType]
     ]:
+        """Provides blocking, batched, message queue recovery of stuck tasks.
+
+        Parameters
+        ----------
+        max_idle_ms: int
+            The minimum amount of time between claiming a message and labeling that message as stuck.
+        expiry_time_ms: int
+            The maximum amount of time between message creation and message processing, before
+            a task is simply discarded.
+        max_retries: int
+            The maximum number of times a stuck message can be reclaimed before it is classified
+            as a poison pill.
+        batch_size: int
+            The number of claimed messages to fetch from the task queue.
+
+        Returns
+        -------
+        dict[str, Any] : 
+            A Dictionary containing the results of successfully processed messages.
+            The key is the task ID as provided by the processed task.
+            The value is the result of the message processing pipeline.
+        list[TaskType] :
+            A list of messages that failed to be processed correctly.
+
+        Side Effect
+        -----------
+        Side effect: expired and poison pill messages are acknowledged and sent to a dead letter queue.
+
+        """
         tasks_to_retry, tasks_to_discard = self.task_queue.recover_stuck_tasks(
             max_idle_ms=max_idle_ms, 
             expiry_time_ms=expiry_time_ms,
