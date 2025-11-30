@@ -24,8 +24,6 @@
 
 ![](./docs/images/Outpost-14.png)
 
-![](./docs/images/Outpost-16.png)
-
 ![](./docs/images/Outpost-17.png)
 
 ![](./docs/images/Outpost-18.png)
