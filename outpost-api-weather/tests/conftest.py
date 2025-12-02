@@ -173,5 +173,7 @@ def reset_circuit_breakers():
     """
     for breaker in [DB_WRITER_CIRCUIT_BREAKER, DB_READER_CIRCUIT_BREAKER]:
         if isinstance(breaker, CircuitBreaker):
-            breaker.close()
+            breaker._state_storage._state = "closed"
+            breaker._state_storage._fail_counter = 0
+            breaker._state_storage._success_counter = 0
     yield
