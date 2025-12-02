@@ -49,8 +49,7 @@ LOCATION_FETCH_BREAKER = CircuitBreaker(
 class OwmIngestionTask(BaseTask):
     latitude_deg: float 
     longitude_deg: float
-    city: str
-    state: str 
+    city_id: int
     model_config = {"frozen": True} # Makes the instance hashable for `set()`
 
 
@@ -108,8 +107,7 @@ def get_location_data(page: int = 0, locations: set[tuple] = None) -> set['OwmIn
     for city in page_data.get("cities", []):
         location_tuple = OwmIngestionTask(
             task_id=uuid4(),
-            city=city["city_name"],
-            state=city["state_name"],
+            city_id=city["city_id"],
             latitude_deg=city["latitude_deg"],
             longitude_deg=city["longitude_deg"]
         )

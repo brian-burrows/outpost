@@ -4,12 +4,10 @@ SET standard_conforming_strings TO on;
 SET check_function_bodies TO false;
 SET client_min_messages TO warning;
 
--- DROP TABLES
-DROP TABLE IF EXISTS open_weather_map_historical_weather_data CASCADE;
-DROP TABLE IF EXISTS open_weather_map_forecast_weather_data CASCADE;
+DROP TABLE IF EXISTS historical_weather_data CASCADE;
+DROP TABLE IF EXISTS forecast_weather_data CASCADE;
 DROP TABLE IF EXISTS cities CASCADE;
 
--- --- 1. CITIES TABLE (Using SERIAL Primary Key for city_id) ---
 CREATE TABLE cities (
     city_id SERIAL PRIMARY KEY,
     city_name VARCHAR(100) NOT NULL,
@@ -18,36 +16,36 @@ CREATE TABLE cities (
     longitude_deg DECIMAL(9, 6) NOT NULL,
     CONSTRAINT VALID_LATITUDE_BOUNDS CHECK (latitude_deg BETWEEN -90 AND 90),
     CONSTRAINT VALID_LONGITUDE_BOUNDS CHECK (longitude_deg BETWEEN -180 AND 180),
-    -- Keep the natural key unique to prevent duplicate cities
     CONSTRAINT cities_unique_name_state UNIQUE (city_name, state_name)
 );
 
--- --- 2. FORECAST WEATHER DATA TABLE (Using city_id FOREIGN KEY) ---
-CREATE TABLE open_weather_map_forecast_weather_data (
+CREATE TABLE forecast_weather_data (
     city_id INTEGER NOT NULL,
-    forecast_generated_ts TIMESTAMP WITH TIME ZONE NOT NULL,
-    ts TIMESTAMP WITH TIME ZONE NOT NULL,
-    temperature_deg_c DECIMAL(5, 2),
-    rain_total_mm DECIMAL(6, 1),
-    PRIMARY KEY (forecast_generated_ts, city_id, ts),
-    CONSTRAINT POSITIVE_RAIN_TOTAL CHECK (rain_total_mm IS NULL OR rain_total_mm >= 0),
+    temperature_deg_c REAL NOT NULL,
+    rain_fall_total_mm REAL NOT NULL,
+    wind_speed_mps REAL NOT NULL,
+    aggregation_level VARCHAR(100) NOT NULL,
+    forecast_generated_at_ts_utc TIMESTAMP WITH TIME ZONE NOT NULL,
+    forecast_timestamp_utc TIMESTAMP WITH TIME ZONE NOT NULL,
+    PRIMARY KEY (forecast_generated_at_ts_utc, city_id, forecast_timestamp_utc),
+    CONSTRAINT POSITIVE_RAIN_TOTAL CHECK (rain_fall_total_mm IS NULL OR rain_fall_total_mm >= 0),
     FOREIGN KEY (city_id)
         REFERENCES cities (city_id) ON DELETE CASCADE
-) PARTITION BY RANGE (forecast_generated_ts);
+); -- PARTITION BY RANGE (forecast_generated_at_ts_utc); TODO: Need automated tool to partition
 
--- --- 3. HISTORICAL WEATHER DATA TABLE (Using city_id FOREIGN KEY) ---
-CREATE TABLE open_weather_map_historical_weather_data (
+CREATE TABLE historical_weather_data (
     city_id INTEGER NOT NULL,
-    ts TIMESTAMP WITH TIME ZONE NOT NULL,
-    temperature_deg_c DECIMAL(5, 2),
-    rain_total_mm DECIMAL(6, 1),
-    PRIMARY KEY (ts, city_id),
-    CONSTRAINT POSITIVE_RAIN_TOTAL CHECK (rain_total_mm IS NULL OR rain_total_mm >= 0),
+    temperature_deg_c REAL NOT NULL,
+    wind_speed_mps REAL NOT NULL,
+    rain_fall_total_mm REAL NOT NULL,
+    aggregation_level TEXT NOT NULL,
+    measured_at_ts_utc TIMESTAMP WITH TIME ZONE NOT NULL,
+    PRIMARY KEY (measured_at_ts_utc, city_id),
+    CONSTRAINT POSITIVE_RAIN_TOTAL CHECK (rain_fall_total_mm IS NULL OR rain_fall_total_mm >= 0),
     FOREIGN KEY (city_id)
         REFERENCES cities (city_id) ON DELETE CASCADE
-) PARTITION BY RANGE (ts);
+); -- PARTITION BY RANGE (measured_at_ts_utc); TODO: Need automated tool to partition
 
--- --- 4. INSERT DATA (Including city_id based on insertion order) ---
 INSERT INTO cities (city_name, state_name, latitude_deg, longitude_deg) VALUES 
     ('colorado-springs', 'colorado', 38.83, -104.82), -- city_id 1
     ('denver', 'colorado', 39.74, -104.99),        -- city_id 2
@@ -66,46 +64,12 @@ INSERT INTO cities (city_name, state_name, latitude_deg, longitude_deg) VALUES
     ('las-vegas', 'nevada', 36.17, -115.14),        -- city_id 15
     ('reno', 'nevada', 39.53, -119.82);             -- city_id 16
 
--- VIEW CREATION (Updated to use city_id joins if necessary, but the original view logic uses city/state name)
-
-CREATE MATERIALIZED VIEW IF NOT EXISTS current_weather_data AS 
-WITH latest_forecast_run AS (
-    SELECT city_id, MAX(forecast_generated_ts) AS latest_gen_ts
-    FROM open_weather_map_forecast_weather_data
-    GROUP BY city_id
-),
-most_recent_forecast AS (
-    SELECT 
-        f.city_id, 
-        c.city_name, 
-        c.state_name, 
-        f.ts, 
-        f.temperature_deg_c, 
-        f.rain_total_mm, 
-        'FORECAST' AS data_source
-    FROM open_weather_map_forecast_weather_data f
-    JOIN latest_forecast_run l ON f.city_id = l.city_id AND f.forecast_generated_ts = l.latest_gen_ts
-    JOIN cities c ON f.city_id = c.city_id
-)
-(
-    SELECT 
-        c.city_name, 
-        c.state_name, 
-        h.ts, 
-        h.temperature_deg_c, 
-        h.rain_total_mm, 
-        'HISTORICAL' AS data_source
-    FROM open_weather_map_historical_weather_data h
-    JOIN cities c ON h.city_id = c.city_id
-    WHERE h.ts >= (NOW() - INTERVAL '3 days')
-) UNION ALL (
-    SELECT city_name, state_name, ts, temperature_deg_c, rain_total_mm, data_source
-    FROM most_recent_forecast
-    WHERE ts > NOW()
+CREATE TABLE weather_classifications (
+    city_id INTEGER PRIMARY KEY,
+    class_label VARCHAR(50) NOT NULL,
+    FOREIGN KEY (city_id)
+        REFERENCES cities (city_id) ON DELETE CASCADE
 );
-
-CREATE UNIQUE INDEX IF NOT EXISTS current_weather_data_unique_idx
-ON current_weather_data (city_name, state_name, ts);
 
 -- ROLE CREATION
 -- TODO: Remove this for production

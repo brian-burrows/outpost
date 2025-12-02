@@ -1,12 +1,13 @@
-from fastapi import APIRouter, Depends, HTTPException
+import logging
+from datetime import datetime
+from typing import List, Literal
+
+from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncConnection
-from datetime import datetime
-from typing import Literal, List
-import logging
 
-from ..core.database import get_read_conn, get_write_conn 
+from ..core.database import get_read_conn, get_write_conn
 
 LOGGER = logging.getLogger(__name__)
 router = APIRouter(
@@ -30,6 +31,17 @@ class HistoricalWeatherData(WeatherData):
     """Input model for historical data insertion."""
     measured_at_ts_utc : datetime = Field(description="Timestamp when the weather data was measured (UTC).")
 
+class CombinedWeatherRecord(BaseModel):
+    """Schema for a record retrieved from the current_weather_data view."""
+    city_name: str
+    state_name: str
+    timestamp_utc: datetime = Field(
+        description="Timestamp of the measurement (historical) or forecast (future) in UTC."
+    ) 
+    temperature_deg_c: float
+    rain_fall_total_mm: float
+    data_source: Literal["HISTORICAL", "FORECAST"]
+
 @router.get("/forecast/{city_id}")
 async def get_latest_forecast(
     city_id: int, 
@@ -41,13 +53,30 @@ async def get_latest_forecast(
     for a given city and aggregation level using raw SQL.
     """
     stmt = text("""
-        SELECT 
-            city_id, temperature_deg_c, wind_speed_mps, rain_fall_total_mm, aggregation_level,
-            forecast_generated_at_ts_utc, forecast_timestamp_utc
-        FROM forecast_weather_data
-        WHERE city_id = :city_id AND aggregation_level = :agg_level
-        ORDER BY forecast_generated_at_ts_utc DESC, forecast_timestamp_utc ASC
-        LIMIT 1
+        SELECT
+            city_id,
+            temperature_deg_c,
+            wind_speed_mps,
+            rain_fall_total_mm,
+            aggregation_level,
+            forecast_generated_at_ts_utc,
+            forecast_timestamp_utc
+        FROM
+            forecast_weather_data
+        WHERE
+            city_id = :city_id
+            AND aggregation_level = :agg_level
+            AND forecast_generated_at_ts_utc = (
+                SELECT
+                    MAX(forecast_generated_at_ts_utc)
+                FROM
+                    forecast_weather_data
+                WHERE
+                    city_id = :city_id
+                    AND aggregation_level = :agg_level
+            )
+        ORDER BY
+            forecast_timestamp_utc ASC;
     """)
     result = await conn.execute(stmt, {
         "city_id": city_id, 
@@ -59,7 +88,7 @@ async def get_latest_forecast(
     return dict(forecast)
 
 
-@router.post("/forecast")
+@router.post("/forecast", status_code=status.HTTP_201_CREATED)
 async def create_forecast_data(
     data: List[ForecastWeatherData],
     conn: AsyncConnection = Depends(get_write_conn) 
@@ -80,6 +109,10 @@ async def create_forecast_data(
             :city_id, :temperature_deg_c, :wind_speed_mps, :rain_fall_total_mm, :aggregation_level,
             :forecast_generated_at_ts_utc, :forecast_timestamp_utc
         )
+        ON CONFLICT (forecast_generated_at_ts_utc, city_id, forecast_timestamp_utc) DO UPDATE SET
+            temperature_deg_c = EXCLUDED.temperature_deg_c,
+            wind_speed_mps = EXCLUDED.wind_speed_mps,
+            rain_fall_total_mm = EXCLUDED.rain_fall_total_mm;
     """)
     params = [item.model_dump() for item in data]
     try:
@@ -120,17 +153,17 @@ async def get_historical_data(
         "agg_level": aggregation_level,
         "limit": limit
     })
-    await conn.commit()
     historical_records = [dict(record) for record in result.mappings()]
     if not historical_records:
         raise HTTPException(status_code=404, detail=f"No historical data found for city {city_id}.")
     return historical_records
 
 
-@router.post("/historical")
+@router.post("/historical", status_code=status.HTTP_201_CREATED)
 async def create_historical_data(
     data: HistoricalWeatherData, 
-    conn: AsyncConnection = Depends(get_write_conn)
+    conn: AsyncConnection = Depends(get_write_conn),
+    status_code=status.HTTP_201_CREATED
 ):
     """Inserts a new historical weather record using raw SQL."""
     table_name = "historical_weather_data"
@@ -143,6 +176,10 @@ async def create_historical_data(
             :city_id, :temperature_deg_c, :wind_speed_mps, :rain_fall_total_mm, :aggregation_level,
             :measured_at_ts_utc
         )
+        ON CONFLICT (measured_at_ts_utc, city_id) DO UPDATE SET
+            temperature_deg_c = EXCLUDED.temperature_deg_c,
+            wind_speed_mps = EXCLUDED.wind_speed_mps,
+            rain_fall_total_mm = EXCLUDED.rain_fall_total_mm;
     """)
     try:
         trans = await conn.begin()
@@ -152,3 +189,77 @@ async def create_historical_data(
         LOGGER.error(f"Database insertion failed for historical data: {e}")
         raise HTTPException(status_code=500, detail="Database insertion failed for historical data.")
     return {"message": "Historical data ingested successfully", "city_id": data.city_id}
+
+@router.get("/window/{city_id}", response_model=List[CombinedWeatherRecord])
+async def fetch_current_weather_window(
+    city_id: int,
+    conn: AsyncConnection = Depends(get_read_conn)
+):
+    city_check_stmt = text("SELECT city_name, state_name FROM cities WHERE city_id = :city_id")
+    city_result = await conn.execute(city_check_stmt, {"city_id": city_id})
+    city_details = city_result.mappings().first()
+    if city_details is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, 
+                            detail=f"City with ID {city_id} not found.")
+    stmt = text("""
+        WITH latest_forecast_run AS (
+            SELECT city_id, MAX(forecast_generated_at_ts_utc) AS latest_gen_ts
+            FROM forecast_weather_data 
+            WHERE city_id = :city_id
+            GROUP BY city_id
+        ),
+        most_recent_forecast AS (
+            SELECT 
+                f.city_id, 
+                c.city_name, 
+                c.state_name, 
+                f.forecast_timestamp_utc, 
+                f.temperature_deg_c, 
+                f.rain_fall_total_mm, 
+                'FORECAST' AS data_source
+            FROM forecast_weather_data f
+            JOIN latest_forecast_run l 
+                ON f.city_id = l.city_id AND f.forecast_generated_at_ts_utc = l.latest_gen_ts
+            JOIN cities c ON f.city_id = c.city_id
+        )
+        -- Historical Data (Last 3 days)
+        (
+            SELECT 
+                c.city_name, 
+                c.state_name, 
+                h.measured_at_ts_utc AS timestamp_utc, 
+                h.temperature_deg_c, 
+                h.rain_fall_total_mm, 
+                'HISTORICAL' AS data_source
+            FROM historical_weather_data h
+            JOIN cities c ON h.city_id = c.city_id
+            WHERE h.city_id = :city_id
+              AND h.measured_at_ts_utc >= (NOW() - INTERVAL '3 days')
+        ) 
+        UNION ALL 
+        -- Future Forecast Data
+        (
+            SELECT 
+                city_name, 
+                state_name, 
+                forecast_timestamp_utc AS timestamp_utc, 
+                temperature_deg_c, 
+                rain_fall_total_mm, 
+                data_source
+            FROM most_recent_forecast
+            WHERE forecast_timestamp_utc > NOW()
+        )
+        ORDER BY
+            timestamp_utc ASC;
+    """)
+    
+    result = await conn.execute(stmt, {"city_id": city_id})
+    weather_window = result.mappings().all()
+
+    if not weather_window:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, 
+                            detail=f"No combined data found for city {city_id} in the current window.")
+        
+    # The result uses 'forecast_timestamp_utc' as the column name, which matches the 
+    # alias used in the CombinedWeatherRecord model ('timestamp_utc').
+    return [CombinedWeatherRecord.model_validate(dict(record)) for record in weather_window]

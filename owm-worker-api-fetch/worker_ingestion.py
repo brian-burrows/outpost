@@ -1,17 +1,15 @@
 import logging
 import os
-import random
 import sys
 import threading
 import time
-from typing import Any
+from datetime import date, datetime, timedelta, timezone
 
 import redis
+import requests
 from etl.consumer import TaskConsumer, TaskProcessingManager
-from etl.deduplication import (
-    RedisDeduplicationCacheRepository,
-    with_deduplication_caching,
-)
+from etl.deduplication import RedisDeduplicationCacheRepository
+from etl.exceptions import RateLimitExceededError
 from etl.handlers import SignalCatcher
 from etl.limiter import RedisDailyRateLimiterDao
 from etl.persistence import SqliteTaskOutbox
@@ -23,11 +21,12 @@ from redis.backoff import ExponentialWithJitterBackoff
 from redis.exceptions import BusyLoadingError
 from redis.exceptions import ConnectionError as RedisConnectionError
 from redis.retry import Retry
+from tenacity import retry, stop_after_attempt, wait_exponential_jitter
 
 logging.basicConfig(
     encoding='utf-8', 
-    level=logging.DEBUG, 
-    format='%(asctime)s - %(levelname)s - %(message)s'
+    level=logging.INFO, 
+    format='%(asctime)s - %(levelname)s - %(threadName)s - %(message)s'
 )
 LOGGER = logging.getLogger(__name__)
 REDIS_MASTER_HOST = os.environ.get("INGESTION_QUEUE_HOST", "redis-master")
@@ -39,7 +38,7 @@ CONSUME_COUNT = 100
 CONSUME_BLOCK_MS = 1000
 INGESTION_MAX_RETRIES = 5
 INGESTION_MAX_IDLE_MS = 600000
-INGESTION_EXPIRY_TIME_MS = 0#2.16e7
+INGESTION_EXPIRY_TIME_MS = 2.16e7
 DLQ_STREAM_KEY = f"dlq:{INGESTION_STREAM_KEY}"
 DLQ_MAX_STREAM_SIZE = 200
 PEL_CHECK_FREQUENCY_SECONDS = 60
@@ -51,6 +50,7 @@ CATEGORIZATION_MAX_STREAM_SIZE = 200
 CATEGORIZATION_BATCH_SIZE = 10
 REDIS_SUBMIT_FREQUENCY_SECONDS = 30
 OWM_MAX_DAILY_REQUESTS = 500
+WEATHER_API_BASE_URL = "http://outpost-api-weather:8000"
 
 REDIS_MASTER_CONNECTION_POOL = redis.BlockingConnectionPool(
     host= REDIS_MASTER_HOST,
@@ -63,52 +63,202 @@ REDIS_MASTER_CONNECTION_POOL = redis.BlockingConnectionPool(
     max_connections = 2
 )
 REDIS_MASTER_CLIENT = redis.StrictRedis(connection_pool=REDIS_MASTER_CONNECTION_POOL)
-API_CIRCUIT_BREAKER = CircuitBreaker(fail_max=10, reset_timeout = 60 * 10)
-UPSTREAM_CIRCUIT_BREAKER = CircuitBreaker(fail_max=10, reset_timeout=60 * 10)
-DOWNSTREAM_CIRCUIT_BREAKER = CircuitBreaker(fail_max=10, reset_timeout = 60 * 10)
-DEDUPLICATION_CACHE = RedisDeduplicationCacheRepository(
+OPEN_WEATHER_MAPS_API_CIRCUIT_BREAKER = CircuitBreaker(fail_max=10, reset_timeout = 60 * 10)
+UPSTREAM_BROKER_CIRCUIT_BREAKER = CircuitBreaker(fail_max=10, reset_timeout=60 * 10)
+DLQ_CIRCUIT_BREAKER = CircuitBreaker(fail_max=10, reset_timeout=60 * 10)
+DOWNSTREAM_BROKER_CIRCUIT_BREAKER = CircuitBreaker(fail_max=10, reset_timeout = 60 * 10)
+WEATHER_SERVICE_CIRCUIT_BREAKER = CircuitBreaker(fail_max=10, reset_timeout = 60 * 10)
+FORECAST_DEDUPLICATION_CACHE = RedisDeduplicationCacheRepository(
     client=REDIS_MASTER_CLIENT,
-    cache_key="ingestion:processing:deduplication:cache"
+    cache_key="ingestion:weather:forecast:deduplication:cache"
+)
+HISTORICAL_WEATHER_DEDUPLICATION_CACHE = RedisDeduplicationCacheRepository(
+    client=REDIS_MASTER_CLIENT,
+    cache_key="ingestion:weather:historical:deduplication:cache"
+)
+OWM_DAILY_RATE_LIMITER = RedisDailyRateLimiterDao(
+    client=REDIS_MASTER_CLIENT,
+    base_key="owm:daily:request:count:attempted",
+    max_requests = 500,
 )
 
 class OwmIngestionTask(BaseTask):
     latitude_deg: float 
     longitude_deg: float
-    city: str
-    state: str 
-    forecast_duration_hours: int = 72
-    historical_duration_hours: int = 72
+    city_id: int
+    model_config = {"frozen": True}
 
 class WeatherCategorizationTask(BaseTask):
-    city: str 
-    state: str 
-    historical_data: list[dict[str, Any]]
-    forecast_data: list[dict[str, Any]]
+    city_id: int
+    last_historical_timestamp: str 
+    forecast_generated_at_timestamp: str
 
-
-@with_deduplication_caching(cache_dao = DEDUPLICATION_CACHE)
-def _process_task(task: OwmIngestionTask) -> WeatherCategorizationTask:
-    LOGGER.info("Simulating API call to OWM")
-    time.sleep(0.01)
-    if random.random() < 0.1:
-        raise ValueError("Error processing weather task")
-    return WeatherCategorizationTask(
-        historical_data = [{"date": "2024-04-01 00:00:00", "rain_inches": 1, "wind_mps": 6}],
-        forecast_data =  [{"date": "2024-04-01 01:00:00", "rain_inches": 1, "wind_mps": 6}],
-        task_id=task.task_id, 
-        city=task.city, 
-        state=task.state, 
-        latitude_deg=task.latitude_deg, 
-        longitude_deg=task.longitude_deg
+@OPEN_WEATHER_MAPS_API_CIRCUIT_BREAKER 
+@retry(
+    stop=stop_after_attempt(5),
+    wait=wait_exponential_jitter(initial=1, max = 30, jitter = 1),
+    reraise=True
+)
+def _fetch_historical_data(
+        task: OwmIngestionTask, 
+        previous_date: date,
+    ):
+    historical_weather = {
+        "lat": task.latitude_deg,
+        "lon": task.longitude_deg,
+        "tz": "+00:00", 
+        "date": previous_date,
+        "units":"metric",
+        "wind": {"max": {"speed": 6}, "direction": 120},
+        "precipitation": {"total": 2}, 
+        "cloud_cover":{"afternoon":0},
+        "humidity":{"afternoon":33},
+        "pressure":{"afternoon":1015},
+        "temperature":{ 
+            "min":286.48 - 273.15,
+            "max":299.24 - 273.15,
+            "afternoon":296.15 - 273.15,
+            "night":289.56 - 273.15,
+            "evening":295.93 - 273.15,
+            "morning":287.59 - 273.15
+        },
+    }
+    measured_at_ts = datetime(
+        previous_date.year, 
+        previous_date.month, 
+        previous_date.day, 
+        tzinfo=timezone.utc
     )
+    LOGGER.info(f"Successfully fetched historical data for city {task.city_id}.")
+    return {
+        "task_id": task.task_id,
+        "city_id": task.city_id,
+        "temperature_deg_c": historical_weather["temperature"]["max"],
+        "wind_speed_mps": historical_weather["wind"]['max']["speed"],
+        "rain_fall_total_mm": historical_weather["precipitation"]["total"],
+        "aggregation_level": "daily",
+        "measured_at_ts_utc": measured_at_ts.isoformat(),
+    }
+
+@OPEN_WEATHER_MAPS_API_CIRCUIT_BREAKER 
+@retry(
+    stop=stop_after_attempt(5),
+    wait=wait_exponential_jitter(initial=1, max = 30, jitter = 1),
+    reraise=True
+)
+def _fetch_weather_forecast(task: OwmIngestionTask, current_hour: datetime) -> list[dict]:
+    hourly_records = []
+    BASE_TEMP_K: float = 288.15 
+    for i in range(48):
+        hourly_offset = timedelta(seconds=(i * 3600))
+        hourly_records.append(
+            {
+                "dt": current_hour + hourly_offset,
+                "temp": BASE_TEMP_K + (i * 2.0)  - 273.15,
+                "wind_speed": 4.1 - (i * 0.2), 
+                "rain": {"1h": 2.5}, 
+                "feels_like":292.33 - 273.15,
+                "pressure":1014,
+                "humidity":91,
+                "dew_point":290.51  - 273.15,
+                "uvi":0,
+                "clouds":54,
+                "visibility":10000,
+                "wind_deg":86,
+                "wind_gust":5.88,
+                "weather":[
+                    {
+                    "id":803,
+                    "main":"Clouds",
+                    "description":"broken clouds",
+                    "icon":"04n"
+                    }
+                ],
+                "pop":0.15
+            }
+        )
+    response_data = {
+        "lat": task.latitude_deg,
+        "lon": task.longitude_deg,
+        "timezone": "America/Chicago",
+        "timezone_offset":-18000,
+        "hourly": hourly_records,
+    }
+    city_id = task.city_id
+    return [
+        {
+            "city_id": city_id, 
+            "temperature_deg_c": hd["temp"],
+            "wind_speed_mps": hd["wind_speed"],
+            "rain_fall_total_mm": (hd.get("rain") or {}).get("1h", 0.0),
+            "aggregation_level": "hourly",
+            "forecast_generated_at_ts_utc" : current_hour.isoformat(),
+            "forecast_timestamp_utc": hd["dt"].isoformat()
+        }
+        for hd in response_data["hourly"]
+    ]
+
+@WEATHER_SERVICE_CIRCUIT_BREAKER
+@retry(
+    stop=stop_after_attempt(5),
+    wait=wait_exponential_jitter(initial=1, max = 30, jitter = 1),
+    reraise=True
+)
+def _post_historical_data(data: dict) -> bool: 
+    historical_data_url = f"{WEATHER_API_BASE_URL}/weather/historical"
+    historical_payload = {
+        k: v for k, v in data.items() 
+        if k not in ["task_id"]
+    }
+    response = requests.post(
+        url=historical_data_url, 
+        json=historical_payload,
+        timeout = 5
+    )
+    response.raise_for_status()
+    LOGGER.info(f"Successfully posted historical data for city {data['city_id']}.")
+    return True
+
+@WEATHER_SERVICE_CIRCUIT_BREAKER
+@retry(
+    stop=stop_after_attempt(5),
+    wait=wait_exponential_jitter(initial=1, max = 30, jitter = 1),
+    reraise=True
+)
+def _post_weather_forecast(data: list[dict]) -> bool: 
+    forecast_data_url = f"{WEATHER_API_BASE_URL}/weather/forecast"
+    response = requests.post(url=forecast_data_url, json=data, timeout=5)
+    response.raise_for_status()
+    LOGGER.info(f"Successfully posted {len(data)} forecast records for city {data[0]['city_id']}.")
+    return True
+
+def _process_task(task: OwmIngestionTask):
+    # This task needs to be split into more pipeline components for
+    # decoupling in a future PR. It has too many responsibilities
+    # and it complicates retry/circuit breaking mechanisms
+    # TODO: Update rate limiter class to INFO when incrementing and printing key
+    key = OWM_DAILY_RATE_LIMITER._get_key_for_today()
+    count = OWM_DAILY_RATE_LIMITER.client.get(key)
+    LOGGER.info(f"The current rate limit count is {count}")
+    if not (OWM_DAILY_RATE_LIMITER.allow_request() and OWM_DAILY_RATE_LIMITER.allow_request()):
+        raise RateLimitExceededError("Daily rate limit exceeded for Open Weather Maps")
+    current_hour = datetime.now().astimezone(timezone.utc).replace(minute=0,second=0, microsecond=0)
+    previous_date = current_hour.date() - timedelta(days=1)
+    historical_data = _fetch_historical_data(task, previous_date)
+    _post_historical_data(historical_data)
+    forecast = _fetch_weather_forecast(task, current_hour)
+    _post_weather_forecast(forecast)
+    LOGGER.info("Posted weather to Weather Service, forming WeatherCategorizationTask")
+    downstream_task = WeatherCategorizationTask(
+        task_id = task.task_id,
+        city_id = task.city_id,
+        last_historical_timestamp=previous_date.isoformat(),
+        forecast_generated_at_timestamp=current_hour.isoformat(),
+    )
+    return downstream_task
+
 
 def _make_upstream_consumer_and_dlq() -> TaskProcessingManager:
-    # Need to ensure our API calls are limited to a certain amount per day
-    rate_limiter = RedisDailyRateLimiterDao(
-        client=REDIS_MASTER_CLIENT,
-        base_key="owm:api:daily:query:count",
-        max_requests=OWM_MAX_DAILY_REQUESTS
-    )
     # Need to find the upstream Redis Stream to consume
     task_queue = RedisTaskQueueRepository(
         client=REDIS_MASTER_CLIENT,
@@ -117,13 +267,7 @@ def _make_upstream_consumer_and_dlq() -> TaskProcessingManager:
         consumer_name=CONSUMER_NAME,
         task_model=OwmIngestionTask,
     )
-    # Need to create a circuit breaker in case the upstream queues go down
-    # Need to create our interface to process tasks
-    task_consumer = TaskConsumer(
-        executable = _process_task,
-        rate_limiter = rate_limiter,
-        circuit_breaker = API_CIRCUIT_BREAKER
-    )
+    task_consumer = TaskConsumer(executable = _process_task)
     # Need to create a DLQ to send failed messages to
     dlq = RedisTaskQueueRepository(
         client=REDIS_MASTER_CLIENT,
@@ -135,13 +279,12 @@ def _make_upstream_consumer_and_dlq() -> TaskProcessingManager:
         task_queue = task_queue,
         task_consumer = task_consumer,
         dead_letter_queue = dlq,
-        queue_breaker = UPSTREAM_CIRCUIT_BREAKER,
-        dlq_breaker = UPSTREAM_CIRCUIT_BREAKER,
+        queue_breaker = UPSTREAM_BROKER_CIRCUIT_BREAKER,
+        dlq_breaker = DLQ_CIRCUIT_BREAKER,
     )
 
 def _make_downstream_producer_and_persistent_storage() -> TaskProducerManager:
     # Need to create the task queue to send weather data processing tasks to
-    # TODO: Add circuit breaking to producer?
     task_queue = RedisTaskQueueRepository(
         client = REDIS_MASTER_CLIENT,
         stream_key = CATEGORIZATION_STREAM_KEY,
@@ -161,6 +304,7 @@ def _make_downstream_producer_and_persistent_storage() -> TaskProducerManager:
 
 # For the producer, we need a background process to send tasks from the persistent storage to Redis
 # Because we don't want to block the main thread that reads upstream tasks
+@DOWNSTREAM_BROKER_CIRCUIT_BREAKER
 def _flush_producer_from_disk_to_queue(
     producer: TaskProducerManager, 
     catcher: SignalCatcher, 
@@ -246,13 +390,13 @@ def main(catcher):
         threading.Thread(
             group = None, 
             target=_flush_producer_from_disk_to_queue,
-            name="categorization-queue-flush-to-redis-thread",
+            name="FlusherThread",
             args=(producer, catcher, CATEGORIZATION_BATCH_SIZE, REDIS_SUBMIT_FREQUENCY_SECONDS)
         ),
         threading.Thread(
             group=None,
             target=_check_pending_entries_list,
-            name="ingestion-pending-entries-checker-thread",
+            name="PelCheckerThread",
             args=(consumer, producer, catcher, PEL_CHECK_FREQUENCY_SECONDS)
         )
     ]
@@ -265,13 +409,17 @@ def main(catcher):
         while not catcher.stop_event.wait(timeout=1):
             # We'll ignore `failed_tasks` from `get_and_process_batch` and `produce_batch_to_disk`
             # by taking only the first entry, which are the successful tasks to send downstream
+            LOGGER.info("Attempting to fetch upstream tasks and process them")
             downstream_tasks, _ = consumer.get_and_process_batch(
                 batch_size = CONSUME_COUNT,
                 block_ms=CONSUME_BLOCK_MS,
             )
+            LOGGER.debug(f"Downstream tasks {downstream_tasks}")
             if downstream_tasks:
                 LOGGER.info(f"Processed batch: obtained {len(downstream_tasks)} tasks for downstream production.")
                 producer.produce_batch_to_disk(list(downstream_tasks.values()))
+            else:
+                LOGGER.info(f"No downstream tasks to be processed: {len(downstream_tasks)}")
     finally:
         catcher.stop_event.set()
         for t in threads:

@@ -48,7 +48,7 @@ async def test_post_forecast_batch_success(test_client: AsyncClient):
         }
     ]
     response = await test_client.post("/weather/forecast", json=forecast_batch)
-    assert response.status_code == 200
+    assert response.status_code == 201
     rj = response.json()
     assert rj["message"] == f"Successfully ingested {len(forecast_batch)} forecast records."
     assert rj["city_id"] == TEST_CITY_ID
@@ -144,7 +144,7 @@ async def test_post_historical_success(test_client: AsyncClient):
         "measured_at_ts_utc": PAST_1H_ISO
     }
     response = await test_client.post("/weather/historical", json=historical_data)
-    assert response.status_code == 200
+    assert response.status_code == 201
     assert response.json()["message"] == "Historical data ingested successfully"
     assert response.json()["city_id"] == TEST_CITY_ID
     verification_response = await test_client.get(f"/weather/historical/{TEST_CITY_ID}?aggregation_level=hourly&limit=1")
