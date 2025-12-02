@@ -30,7 +30,6 @@ BASE_RETRYING = Retrying(
     reraise=True,
 )
 
-
 class TaskProcessingFunctionInterface(ABC):
     @abstractmethod
     def execute(self, task: TaskType) -> Any:
@@ -251,6 +250,7 @@ class TaskProcessingManager(TaskProcessingManagerInterface):
             breaker = nullcontext() if self.queue_breaker is None else self.queue_breaker.calling()
             with breaker:
                 self.task_queue.acknowledge_tasks(messages_to_ack)
+        LOGGER.info(f"Successfully acknowledged {len(messages_to_ack)} messages")
         
     @retry(
         wait = wait_random_exponential(multiplier=1, min=1, max=8),
@@ -340,7 +340,7 @@ class TaskProcessingManager(TaskProcessingManagerInterface):
                     messages_to_ack.append(msg_id)
                     LOGGER.info(f"Task {msg_id} was successfully processed")
                 except CircuitBreakerError:
-                    LOGGER.debug(f"Task {msg_id} failed due to Circuit Breaker trip.")
+                    LOGGER.info(f"Task {msg_id} failed due to Circuit Breaker trip.")
             except RateLimitExceededError:
                 LOGGER.error(
                     f"Task {msg_id} was not processed due to rate limits."
@@ -353,7 +353,7 @@ class TaskProcessingManager(TaskProcessingManagerInterface):
             except Exception as e:
                 failed_tasks.append(task)
                 failed_message_ids.append(msg_id)
-                LOGGER.error(f"Task {msg_id} failed with unhandled exception: {e}, sending to DLQ")
+                LOGGER.exception(f"Task {msg_id} failed with unhandled exception: {e}, sending to DLQ")
                 continue
         self._acknowledge_tasks(messages_to_ack)
         self._send_tasks_to_dlq_and_acknowledge(

@@ -69,7 +69,7 @@ class RedisDailyRateLimiterDao(RateLimiterInterface):
         key = self._get_key_for_today()
         try:
             count = self.client.incr(key)
-            LOGGER.debug(f"For Key {key}, the current request count is {count}")
+            LOGGER.info(f"For Key {key}, the current request count is {count}")
             if count == 1:
                 self.client.expire(key, self.two_days_in_seconds)
             return count <= self.max_requests
