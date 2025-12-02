@@ -141,10 +141,14 @@ version = "0.1.0"
 source = { virtual = "." }
 dependencies = [
     { name = "outpost-etl-core" },
+    { name = "requests" },
 ]
 
 [package.metadata]
-requires-dist = [{ name = "outpost-etl-core", specifier = ">=0.1.0" }]
+requires-dist = [
+    { name = "outpost-etl-core", specifier = ">=0.1.0" },
+    { name = "requests", specifier = ">=2.32.5" },
+]
 
 [[package]]
 name = "packaging"
