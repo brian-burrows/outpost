@@ -1,13 +1,17 @@
+import asyncio
 from typing import AsyncGenerator
+
+import asyncpg
+import docker
 import pytest
 import pytest_asyncio
-import docker
-import asyncpg 
 from httpx import ASGITransport, AsyncClient
+from pybreaker import CircuitBreaker
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine, create_async_engine
-from sqlalchemy import text 
-import asyncio
+
 from main import app
+from outpost.core.breakers import DB_READER_CIRCUIT_BREAKER, DB_WRITER_CIRCUIT_BREAKER
 from outpost.core.database import get_read_conn, get_write_conn
 
 POSTGRES_USER = "testuser"
@@ -160,3 +164,16 @@ async def test_client(
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://localhost") as client:
         yield client
+
+@pytest.fixture(autouse=True)
+def reset_circuit_breakers():
+    """
+    Fixture that runs before every test to reset the state of all global 
+    CircuitBreaker instances back to 'closed'.
+    """
+    for breaker in [DB_WRITER_CIRCUIT_BREAKER, DB_READER_CIRCUIT_BREAKER]:
+        if isinstance(breaker, CircuitBreaker):
+            breaker._state_storage._state = "closed"
+            breaker._state_storage._fail_counter = 0
+            breaker._state_storage._success_counter = 0
+    yield

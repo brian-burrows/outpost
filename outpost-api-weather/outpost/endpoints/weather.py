@@ -7,7 +7,10 @@ from pydantic import BaseModel, Field
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncConnection
 
-from ..core.database import get_read_conn, get_write_conn
+from outpost.core.breakers import DB_READER_CIRCUIT_BREAKER, DB_WRITER_CIRCUIT_BREAKER
+from outpost.core.database import get_read_conn, get_write_conn
+from outpost.core.exceptions import async_map_postgres_exceptions_to_http
+from outpost.core.retries import postgres_async_retry_factory
 
 LOGGER = logging.getLogger(__name__)
 router = APIRouter(
@@ -43,6 +46,7 @@ class CombinedWeatherRecord(BaseModel):
     data_source: Literal["HISTORICAL", "FORECAST"]
 
 @router.get("/forecast/{city_id}")
+@async_map_postgres_exceptions_to_http
 async def get_latest_forecast(
     city_id: int, 
     aggregation_level: Literal["daily", "hourly"] = "daily",
@@ -78,17 +82,23 @@ async def get_latest_forecast(
         ORDER BY
             forecast_timestamp_utc ASC;
     """)
-    result = await conn.execute(stmt, {
-        "city_id": city_id, 
-        "agg_level": aggregation_level
-    })
-    forecast = result.mappings().first()
-    if forecast is None:
-        raise HTTPException(status_code=404, detail=f"Forecast not found for city {city_id}.")
-    return dict(forecast)
+    retrying = postgres_async_retry_factory()
+    async for retry in retrying:
+        with retry:
+            with DB_READER_CIRCUIT_BREAKER.calling():
+                result = await conn.execute(stmt, {
+                    "city_id": city_id, 
+                    "agg_level": aggregation_level
+                })
+                forecast = result.mappings().first()
+    if forecast:
+        return dict(forecast)
+    LOGGER.error(f"Forecast not found for city {city_id}")
+    raise HTTPException(status_code=404, detail=f"Forecast not found for city {city_id}.")
 
 
 @router.post("/forecast", status_code=status.HTTP_201_CREATED)
+@async_map_postgres_exceptions_to_http
 async def create_forecast_data(
     data: List[ForecastWeatherData],
     conn: AsyncConnection = Depends(get_write_conn) 
@@ -115,21 +125,21 @@ async def create_forecast_data(
             rain_fall_total_mm = EXCLUDED.rain_fall_total_mm;
     """)
     params = [item.model_dump() for item in data]
-    try:
-        trans = await conn.begin()
-        await conn.execute(stmt, params)
-        await trans.commit()
-    except Exception as e:
-        LOGGER.error(f"Database batch insertion failed for forecast data: {e}")
-        raise HTTPException(status_code=500, detail="Database batch insertion failed for forecast data.")
     city_id_ref = data[0].city_id
-    return {
-        "message": f"Successfully ingested {len(data)} forecast records.", 
-        "city_id": city_id_ref
-    }
+    async for attempt in postgres_async_retry_factory():
+        with attempt:
+            with DB_WRITER_CIRCUIT_BREAKER.calling():
+                trans = await conn.begin()
+                await conn.execute(stmt, params)
+                await trans.commit()
+                return {
+                    "message": f"Successfully ingested {len(data)} forecast records.", 
+                    "city_id": city_id_ref
+                }
 
 
 @router.get("/historical/{city_id}")
+@async_map_postgres_exceptions_to_http
 async def get_historical_data(
     city_id: int, 
     aggregation_level: Literal["daily", "hourly"] = "daily",
@@ -148,18 +158,23 @@ async def get_historical_data(
         ORDER BY measured_at_ts_utc DESC
         LIMIT :limit
     """)
-    result = await conn.execute(stmt, {
-        "city_id": city_id, 
-        "agg_level": aggregation_level,
-        "limit": limit
-    })
-    historical_records = [dict(record) for record in result.mappings()]
+    historical_records = None
+    async for attempt in postgres_async_retry_factory():
+        with attempt:
+            with DB_READER_CIRCUIT_BREAKER.calling():
+                result = await conn.execute(stmt, {
+                    "city_id": city_id, 
+                    "agg_level": aggregation_level,
+                    "limit": limit
+                })
+                historical_records = [dict(record) for record in result.mappings()]
     if not historical_records:
         raise HTTPException(status_code=404, detail=f"No historical data found for city {city_id}.")
     return historical_records
 
 
 @router.post("/historical", status_code=status.HTTP_201_CREATED)
+@async_map_postgres_exceptions_to_http
 async def create_historical_data(
     data: HistoricalWeatherData, 
     conn: AsyncConnection = Depends(get_write_conn),
@@ -181,23 +196,33 @@ async def create_historical_data(
             wind_speed_mps = EXCLUDED.wind_speed_mps,
             rain_fall_total_mm = EXCLUDED.rain_fall_total_mm;
     """)
-    try:
-        trans = await conn.begin()
-        await conn.execute(stmt, data.model_dump())
-        await trans.commit()
-    except Exception as e:
-        LOGGER.error(f"Database insertion failed for historical data: {e}")
-        raise HTTPException(status_code=500, detail="Database insertion failed for historical data.")
-    return {"message": "Historical data ingested successfully", "city_id": data.city_id}
+    async for attempt in postgres_async_retry_factory():
+        with attempt:
+            with DB_WRITER_CIRCUIT_BREAKER.calling():
+                trans = await conn.begin()
+                await conn.execute(stmt, data.model_dump())
+                await trans.commit()
+                return {"message": "Historical data ingested successfully", "city_id": data.city_id}
 
 @router.get("/window/{city_id}", response_model=List[CombinedWeatherRecord])
+@async_map_postgres_exceptions_to_http
 async def fetch_current_weather_window(
     city_id: int,
     conn: AsyncConnection = Depends(get_read_conn)
 ):
-    city_check_stmt = text("SELECT city_name, state_name FROM cities WHERE city_id = :city_id")
-    city_result = await conn.execute(city_check_stmt, {"city_id": city_id})
-    city_details = city_result.mappings().first()
+    retrying = postgres_async_retry_factory()
+    city_details = None
+    async for retry in retrying:
+        with retry:
+            with DB_READER_CIRCUIT_BREAKER.calling():
+                city_check_stmt = text(
+                    """
+                    SELECT city_name, state_name 
+                    FROM cities WHERE city_id = :city_id
+                    """
+                )
+                city_result = await conn.execute(city_check_stmt, {"city_id": city_id})
+                city_details = city_result.mappings().first()
     if city_details is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, 
                             detail=f"City with ID {city_id} not found.")
@@ -252,14 +277,15 @@ async def fetch_current_weather_window(
         ORDER BY
             timestamp_utc ASC;
     """)
-    
-    result = await conn.execute(stmt, {"city_id": city_id})
-    weather_window = result.mappings().all()
-
+    weather_window = None
+    async for attempt in postgres_async_retry_factory():
+        with attempt:
+            with DB_READER_CIRCUIT_BREAKER.calling():
+                result = await conn.execute(stmt, {"city_id": city_id})
+                weather_window = result.mappings().all()
     if not weather_window:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, 
-                            detail=f"No combined data found for city {city_id} in the current window.")
-        
-    # The result uses 'forecast_timestamp_utc' as the column name, which matches the 
-    # alias used in the CombinedWeatherRecord model ('timestamp_utc').
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, 
+            detail=f"No combined data found for city {city_id} in the current window."
+        )
     return [CombinedWeatherRecord.model_validate(dict(record)) for record in weather_window]

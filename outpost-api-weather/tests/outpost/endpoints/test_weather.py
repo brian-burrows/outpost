@@ -1,6 +1,7 @@
+from datetime import datetime, timedelta, timezone
+
 import pytest
 from httpx import AsyncClient
-from datetime import datetime, timezone, timedelta
 
 TEST_CITY_ID = 500
 TEST_CITY_DATA = {
