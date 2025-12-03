@@ -22,6 +22,7 @@ RUN uv sync --locked --no-dev --find-links file:///app/dist/
 
 # Copy project source
 COPY ./owm-worker-api-fetch/worker_ingestion.py /app
+COPY ./owm-worker-api-fetch/src /app/src
 
 # Non-root user
 RUN groupadd --system --gid 999 nonroot \
