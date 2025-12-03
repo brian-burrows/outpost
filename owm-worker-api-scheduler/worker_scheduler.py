@@ -5,21 +5,7 @@ from src.tasks import PRODUCER_MANAGER, get_location_data
 logging.basicConfig(encoding='utf-8', level=logging.DEBUG)
 LOGGER = logging.getLogger(__name__)
 
-REDIS_STREAM_KEY = "owm-ingestion-stream"
-SQLITE_DB_PATH = "/tmp/owm_producer_tasks.db"
-
-WEATHER_API_HOST = "outpost-api-weather"
-WEATHER_API_PORT = "8000"
-
-MAX_STREAM_SIZE = 100000 
 TASK_SUBMIT_BATCH_SIZE = 500
-API_LIMIT = 100
-
-MAX_RETRIES = 5
-
-class ApiRequestError(Exception):
-    """Custom exception for HTTP errors (e.g., 404, 500) from the API."""
-    pass
 
 def main():
     """Executes single, one-off run task generation for all locations in the database"""
