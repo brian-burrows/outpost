@@ -66,7 +66,7 @@ INSERT INTO cities (city_name, state_name, latitude_deg, longitude_deg) VALUES
 
 CREATE TABLE weather_classifications (
     city_id INTEGER PRIMARY KEY,
-    class_label VARCHAR(50) NOT NULL,
+    class_label TEXT NOT NULL,
     FOREIGN KEY (city_id)
         REFERENCES cities (city_id) ON DELETE CASCADE
 );

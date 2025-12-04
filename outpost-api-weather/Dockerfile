@@ -31,5 +31,5 @@ CMD ["/app/.venv/bin/gunicorn", "main:app", \
     "--workers", "1", \
     "--bind", "0.0.0.0:8000", \
     "--access-logfile", "-", \
-    "--log-level", "info", \
+    "--log-level", "debug", \
     "--worker-class", "uvicorn.workers.UvicornWorker"]
