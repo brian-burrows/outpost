@@ -23,6 +23,7 @@ RUN uv sync --locked --no-dev --find-links file:///app/dist/
 
 # Copy project source
 COPY ./owm-worker-weather-categorizer/worker_categorization.py /app
+COPY ./owm-worker-weather-categorizer/src /app/src
 RUN uv pip install -e .
 
 # Non-root user
