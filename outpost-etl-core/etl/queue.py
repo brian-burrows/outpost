@@ -67,17 +67,24 @@ class TaskQueueRepositoryInterface(ABC):
         pass
 
     @abstractmethod
-    def recover_claimed_tasks(self) -> list[QueuedTask]:
+    def fetch_claimed_tasks(self, cursor: str) -> tuple[list[QueuedTask], str | None]:
         """Scans for tasks that have been claimed by a worker, but not acknowledged.
 
         Provides a way for one worker to collaborate with another by reclaiming tasks
         if the worker dies. It is up to the application code to decide on how to handle
         in-progress tasks.
+        
+        Parameters
+        ----------
+        cursor : str 
+            A pointer to allow pagination when fetching items from the queue in batches.
 
         Returns
         -------
-        list[QueuedTask]
-            A list of queued tasks that have been claimed by a worker, but not acknowledged
+        tuple[list[QueuedTask], str | None]
+            A tuple containing:
+            1. list[QueuedTask]: A list of queued tasks that have been claimed by a worker, but not acknowledged.
+            2. str | None: The next value for the cursor to continue pagination. Returns `None` when the PEL is empty.
             
         """
         pass
@@ -100,6 +107,26 @@ class TaskQueueRepositoryInterface(ABC):
         """
         pass
 
+    @abstractmethod
+    def reclaim_tasks(self, tasks: list[QueuedTask]) -> list[QueuedTask]:
+        """Claims ownership of a list of messages from another consumer or resets the idle time.
+
+        This method executes the Redis XCLAIM command.
+
+        Parameters
+        ----------
+        tasks : list[QueuedTask]
+            A list of tasks whose ownership is to be claimed.
+            
+        Returns
+        -------
+        list[QueuedTask]
+            A list of the tasks that were successfully claimed, now containing 
+            updated metadata (delivery count, idle time reset to 0).
+
+        """
+        pass
+
 
 class RedisTaskQueueRepository(TaskQueueRepositoryInterface):
     def __init__(
@@ -112,6 +139,7 @@ class RedisTaskQueueRepository(TaskQueueRepositoryInterface):
         max_stream_length: int | None = None,
         dequeue_blocking_time_seconds: int = 1,
         dequeue_batch_size: int = 1,
+        min_idle_time_seconds: int = 60,
     ):
         """A concrete implementation of TaskQueueRepositoryInterface using Redis.
         
@@ -135,6 +163,10 @@ class RedisTaskQueueRepository(TaskQueueRepositoryInterface):
             The number of seconds to block the thread while waiting for new tasks.
         dequeue_batch_size : int 
             The number of messages to fetch from Redis in a single read.
+        min_idle_time_seconds : int 
+            Provides a minimum value for how long a task must be idle in the queue before
+            claiming it. This provides a buffer in case another worker attempts to reclaim
+            the task concurrently, only one should succeed.
 
         """
         LOGGER.info(f"Connected to client {client.info}")
@@ -352,84 +384,138 @@ class RedisTaskQueueRepository(TaskQueueRepositoryInterface):
             return self.redis_connection.xack(self.stream_key, self.group_name, *message_ids)  
         return 0
 
-    def recover_stuck_tasks(self) -> tuple[
-        list[tuple[str, TaskType]], 
-        list[tuple[str, TaskType]]
-    ]:
-        """Fetch items from the Pending Entries list and classify them based on Redis metadata.
-
-        Fetches identifiers from the Pending Entries List, and then subsequently pulls the task
-        from the Redis Stream using available metadata. Classifies messages as stuck, poison pills,
-        expired, or in progress.
+    def fetch_claimed_tasks(self, cursor: str) -> tuple[list[QueuedTask], str | None]:
+        """
+        Scans for and returns tasks that have been claimed by a worker but not yet acknowledged.
+        
+        Fetches entries from the Pending Entries List (PEL) along with the task payloads, 
+        using internal state for cursor-based pagination. Messages will be fetched in batches 
+        according to `self.dequeue_batch_size`.
 
         Parameters
         ----------
-        max_idle_ms : int 
-            The maximum amount of time a worker can check out a task before another worker flags it as
-            stuck and subsequently reclaims it.
-        expiry_time_ms : int
-            The maximum amount of time after message creation that a task can exist before it is flagged
-            as expired. Handling (and acknowledging) the expired task must be done by the calling process.
-        max_retries : int 
-            The maximum number of times a message can be reclaimed from the PEL before it is flagged as 
-            a poison pill message. Handling (and acknowledging) the expired task must be done by the calling 
-            process.
-        batch_size : int
-            The maximum number of messages that can be fetched and classified in a single pass.
-            Currently non-functional.
+        cursor : str 
+            A pointer to the last message ID processed by the PEL. Can be set to '-' in order to
+            paginate from first entry in the PEL.
 
+        Returns
+        -------
+        tuple[list[QueuedTask], str | None]
+            A tuple containing:
+            1. list[QueuedTask]: A list of queued tasks that have been claimed by a worker, but not acknowledged.
+            2. str | None: The next value for the cursor to continue pagination. Returns `None` when the PEL is empty.
+            
         """
-        # TODO: We need some state to track pagination properly, so that batch reads are done correctly
-        LOGGER.info(f"Attempting to fetch {batch_size} tasks from {self.stream_key} PEL")
+        batch_size = self.dequeue_batch_size
+        # ({cursor} excludes the value `cursor` from the next fetch
+        # which we do because we returned `cursor` in the previous page
+        start_cursor = cursor if cursor == '-' else f'({cursor}' 
+        LOGGER.info(f"Attempting to fetch {batch_size} tasks from {self.stream_key} PEL starting at {start_cursor}")
         pel_entries = self.redis_connection.xpending_range(
             self.stream_key,
             self.group_name,
-            min='-', # -, + will fetch ALL items from the pending entries list
-            max='+',
+            min=start_cursor, 
+            max='+', 
             count=batch_size,    
         )
-        message_ids_to_dlq: list[str] = []
-        message_ids_to_claim: list[str] = []
-        for entry in pel_entries: 
-            LOGGER.debug(f"Extracted entry from PEL: {entry}")
-            message_id = entry['message_id'].decode('utf-8') 
-            delivery_count = entry['times_delivered']
-            idle_time_ms = entry['time_since_delivered']
-            if idle_time_ms > expiry_time_ms:
-                # If a message is too old, always retire it OR 
-                LOGGER.info(f"Flagging {entry} for DLQ because {idle_time_ms} > {expiry_time_ms}")
-                message_ids_to_dlq.append(message_id)
-            elif delivery_count > max_retries:
-                # If a message has been retried too many times, retire it
-                LOGGER.info(f"Flagging {entry} for DLQ because of retry limit")
-                message_ids_to_dlq.append(message_id)
-            elif idle_time_ms > max_idle_ms:
-                # If a message is stale, but still relevant, retry it
-                LOGGER.info(f"Claiming stale message {entry}, will attempt a retry")
-                message_ids_to_claim.append(message_id)
-        dlq_tasks_data = []
-        if message_ids_to_dlq:
-            pipe = self.redis_connection.pipeline()
-            for message_id in message_ids_to_dlq:
-                pipe.xrange(name=self.stream_key, min=message_id, max=message_id, count=1)
-            dlq_message_batches = pipe.execute()
-            dlq_messages = []
-            for message_list in dlq_message_batches:
-                if message_list:
-                    dlq_messages.append(message_list[0])
-            dlq_response_to_process = [(self.stream_key.encode(), dlq_messages)]
-            dlq_tasks_data = self._deserialize_response(dlq_response_to_process)
-            LOGGER.info(f"Fetched {len(dlq_tasks_data)} DLQ messages.")
-        claimed_tasks_data = []
-        if message_ids_to_claim:
-            claimed_messages = self.redis_connection.xclaim(
-                name=self.stream_key,
-                groupname=self.group_name,
-                consumername=self.consumer_name,
-                min_idle_time=max_idle_ms,
-                message_ids=message_ids_to_claim,
+        if not pel_entries:
+            LOGGER.info("No more claimed tasks found in the Pending Entries List.")
+            return [], None
+        # Get server time for calculating task ages.
+        redis_server_time_ms = self._get_redis_server_time_ms()
+        message_ids = [entry['message_id'].decode('utf-8') for entry in pel_entries]
+        pipe = self.redis_connection.pipeline()
+        for message_id in message_ids:
+            # Why use xrange vs xrangegroup here?
+            pipe.xrange(name=self.stream_key, min=message_id, max=message_id) 
+        raw_payload_batches = pipe.execute()
+        flat_messages = []
+        for batch in raw_payload_batches:
+            if batch and batch[0]: 
+                flat_messages.extend(batch[0]) 
+        tasks_response_to_process = [(self.stream_key.encode(), flat_messages)]
+        deserialized_tasks = self._deserialize_response(tasks_response_to_process)
+        task_data_map = {msg_id: task_obj for msg_id, task_obj in deserialized_tasks}
+        # Map responses into QueuedTask instances
+        queued_tasks = []
+        for entry in pel_entries:
+            message_id = entry['message_id'].decode('utf-8')
+            task_object = task_data_map.get(message_id)
+            if not task_object: 
+                continue 
+            time_queued_milliseconds = int(message_id.split("-")[0])
+            time_since_queued_seconds = (
+                (redis_server_time_ms - time_queued_milliseconds) / 1000.0 
+                if redis_server_time_ms >= time_queued_milliseconds else 0.0
             )
-            tasks_response_to_process = [(self.stream_key.encode(), claimed_messages)]
-            claimed_tasks_data = self._deserialize_response(tasks_response_to_process)
-            LOGGER.info(f"Claimed {len(claimed_tasks_data)} stuck messages.")
-        return claimed_tasks_data, dlq_tasks_data
+            queued_tasks.append(QueuedTask(
+                queued_task_id=message_id,
+                time_since_queued_seconds=time_since_queued_seconds,
+                time_since_last_delivered=entry['time_since_delivered'] / 1000.0, # Original in milliseconds
+                number_of_times_delivered=entry['times_delivered'],
+                task=task_object
+            ))
+        # Determine the next cursor, which is the ID of the last item returned in this batch
+        next_cursor = pel_entries[-1]['message_id'].decode('utf-8')
+        # If the number of items returned is less than the batch size, 
+        # we've reached the end of the PEL, so the next cursor is None.
+        if len(pel_entries) < self.dequeue_batch_size:
+            LOGGER.info("End of PEL reached.")
+            next_cursor = None
+        LOGGER.info(f"Successfully retrieved {len(queued_tasks)} claimed tasks. Next cursor: {next_cursor}")
+        return queued_tasks, next_cursor
+    
+    def reclaim_tasks(self, tasks: list[QueuedTask]) -> list[QueuedTask]:
+        """Claims ownership of a list of messages from another consumer or resets the idle time.
+
+        Executes the Redis XCLAIM command for the provided list of tasks.
+
+        Parameters
+        ----------
+        tasks : list[QueuedTask]
+            A list of stuck tasks that should be reclaimed from the task queue.
+
+        Returns
+        -------
+        list[QueuedTask]
+            A list of the tasks that were successfully claimed, now containing 
+            updated metadata (idle time reset to 0, delivery count incremented).
+            Relies on incrementing the delivery count from the provided `tasks`
+            argument.
+
+        """
+        if not tasks:
+            return []
+        task_mappings = {t.queued_task_id: t for t in tasks}
+        message_ids = [t.queued_task_id for t in tasks]
+        LOGGER.info(f"Attempting to XCLAIM {len(message_ids)} tasks from {self.stream_key} PEL.")
+        claimed_messages_raw = self.redis_connection.xclaim(
+            name=self.stream_key,
+            groupname=self.group_name,
+            consumername=self.consumer_name,
+            message_ids=message_ids,
+            min_idle_time = self.min_idle_time_seconds * 1000
+        )
+        if not claimed_messages_raw:
+            LOGGER.info("No tasks were successfully XCLAIMed (possibly failed idle time check).")
+            return []
+        tasks_response_to_process = [(self.stream_key.encode(), claimed_messages_raw)]
+        deserialized_response = self._deserialize_response(tasks_response_to_process)
+        redis_server_time_ms = self._get_redis_server_time_ms()
+        queued_tasks = []
+        for message_id, task_object in deserialized_response:
+            time_queued_milliseconds = int(message_id.split("-")[0])
+            time_since_queued_seconds = (
+                (redis_server_time_ms - time_queued_milliseconds) / 1000.0 
+                if redis_server_time_ms >= time_queued_milliseconds else 0.0
+            )
+            queued_task = QueuedTask(
+                queued_task_id=message_id, 
+                time_since_queued_seconds=time_since_queued_seconds,
+                time_since_last_delivered=0.0, 
+                number_of_times_delivered=task_mappings[message_id].number_of_times_delivered + 1, 
+                task=task_object,
+            )
+            queued_tasks.append(queued_task)
+        LOGGER.info(f"Successfully XCLAIMed and returned {len(queued_tasks)} tasks.")
+        return queued_tasks
