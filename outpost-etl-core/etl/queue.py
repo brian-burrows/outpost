@@ -1,10 +1,11 @@
 import json
 import logging
 from abc import ABC, abstractmethod
-from typing import Any, Type, TypeVar
+from typing import Type, TypeVar
 from uuid import UUID
 
 import redis
+from pydantic import BaseModel, Field
 
 from etl.tasks import BaseTask
 
@@ -12,30 +13,44 @@ TaskType = TypeVar("TaskType", bound=BaseTask)
 
 LOGGER = logging.getLogger(__name__)
 
+class QueuedTask(BaseModel):
+    queued_task_id: str = Field(
+        ..., 
+        description="The unique message ID assigned by the queue (e.g., Redis Stream ID)."
+    )
+    time_since_queued_seconds: float = Field(
+        ...,
+        description="The total time, in seconds, elapsed since the task was originally added to the queue."
+    )
+    time_since_last_delivered: float = Field(
+        ...,
+        description="The time, in seconds, elapsed since this task was last claimed by a worker (idle time)."
+    )
+    number_of_times_delivered: int = Field(
+        ...,
+        description="The total count of how many times this task has been claimed by a worker."
+    )
+    task: TaskType = Field(
+        ...,
+        description="The encapsulated task payload data."
+    )
+
+
 class TaskQueueRepositoryInterface(ABC):
     @abstractmethod
-    def dequeue_tasks(self, count: int, block_ms: int | None = None) -> list[tuple[str, TaskType]]:
+    def dequeue_tasks(self) -> list[QueuedTask]:
         """Fetches new tasks from the queue.
-        
-        Parameters
-        ----------
-        count : int
-            The number of tasks to dequeue from the task queue in a single batch.
-        block_ms : int 
-            The amount of time to block waiting task to arrive in the message queue, milliseconds.
 
         Returns
         -------
-        list[tuple[str, TaskType]]
-            A list of tasks tuples `(msg_id, task)` claimed from the task queue.
-            `msg_id` must be an internal identifier used by the message queue to
-            track messages.
+        list[QueuedTask]
+            A list of queued tasks
         
         """
         pass
     
     @abstractmethod
-    def enqueue_tasks(self, task: list[TaskType]) -> list[Any]:
+    def enqueue_tasks(self, task: list[TaskType]) -> list[QueuedTask]:
         """Enqueue a list of tasks to the message queue.
         
         Parameters
@@ -44,54 +59,37 @@ class TaskQueueRepositoryInterface(ABC):
 
         Returns
         -------
-        A list of identifiers submitted to the task queue. It is up to the
-        individual concrete implementation to decide whether this returns
-        a list of Task IDs or a list of message IDs provided by the queue.
+        A list of QueuedTask instances containing the task and associated
+        queue metadata.
 
         """
         pass
 
     @abstractmethod
-    def recover_stuck_tasks(self, max_idle_ms: int, expiry_time_ms: int, max_retries: int, batch_size: int) -> tuple[
-        list[tuple[str, TaskType]],
-        list[tuple[str, TaskType]]
-    ]:
-        """Scans for and attempts to reclaim or flag stuck/failed tasks.
-        
-        Parameters
-        ----------
-        max_idle_ms : int 
-            Minimum amount of time between dequeing a task and flagging it as stuck.
-        expiry_time_ms: int
-            Maximum amount of time between creating a task and flagging it as expired.
-        max_retries : int
-            Maximum amount of times a task can be dequeued before flagging it as a poison pill message.
-        batch_size : int
-            Maximum number of potentially stuck items to check in a single request.
+    def recover_claimed_tasks(self) -> list[QueuedTask]:
+        """Scans for tasks that have been claimed by a worker, but not acknowledged.
+
+        Provides a way for one worker to collaborate with another by reclaiming tasks
+        if the worker dies. It is up to the application code to decide on how to handle
+        in-progress tasks.
 
         Returns
         -------
-        list[tuple[str, TaskType]]
-            A list of (msg_id, task) tuples that have been claimed by the current worker process
-            after flagging them as stuck. The `msg_id` must be an internal queue identifier for 
-            tracking messages in the queue.
-        list[tuple[str, TaskType]]
-            A list of (msg_id, task) tuples that have been flagged as either expired or poison pill
-            messages. The `msg_id` must be an internal queue identifier for tracking messages in the
-            queue.
-
+        list[QueuedTask]
+            A list of queued tasks that have been claimed by a worker, but not acknowledged
+            
         """
         pass
 
     @abstractmethod
-    def acknowledge_tasks(self, message_ids: list[str]) -> int:
+    def acknowledge_tasks(self, tasks: list[QueuedTask]) -> int:
         """Confirms processing of tasks, removing them from the pending list.
         
         Parameters
         ----------
-        message_ids : list[str]
-            A list of `msg_id` values to acknowledge in the queue, where `msg_id`
-            must be an internal identifier for items in the queue.
+        tasks : list[QueuedTask]
+            A list of `QueuedTask` instances to acknowledge as completed. Tasks
+            should be removed from the queue that they were claimed from.
 
         Returns
         -------
@@ -282,13 +280,7 @@ class RedisTaskQueueRepository(TaskQueueRepositoryInterface):
             return self.redis_connection.xack(self.stream_key, self.group_name, *message_ids)  
         return 0
 
-    def recover_stuck_tasks(
-        self, 
-        max_idle_ms: int, 
-        expiry_time_ms: int,
-        max_retries: int, 
-        batch_size: int
-    ) -> tuple[
+    def recover_stuck_tasks(self) -> tuple[
         list[tuple[str, TaskType]], 
         list[tuple[str, TaskType]]
     ]:
