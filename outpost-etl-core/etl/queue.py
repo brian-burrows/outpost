@@ -228,7 +228,7 @@ class RedisTaskQueueRepository(TaskQueueRepositoryInterface):
         -------
         list[QueuedTask] :
             A list of `QueuedTask` instances representing the successfully submitted tasks.
-            
+
         """
         LOGGER.debug(f"Attempting to enqueue {len(tasks)} tasks to queue {self.stream_key}")
         # Prepare data and track original tasks for zipping with Redis reseponse later
@@ -327,18 +327,28 @@ class RedisTaskQueueRepository(TaskQueueRepositoryInterface):
             queued_tasks.append(queued_task)
         return queued_tasks
 
-    def acknowledge_tasks(self, message_ids: list[str]) -> int:
+    def acknowledge_tasks(self, tasks: list[QueuedTask]) -> int:
         """Confirms processing of tasks, removing them from the pending entries list.
         
+        This method sends the XACK command to Redis to move the messages from the 
+        consumer group's Pending Entry List (PEL) to the final acknowledged state.
+
         Parameters
         ----------
-        message_ids : list[str]
-            A list of message IDs, auto-generated from Redis, that identify tasks in the
-            message queues.
+        tasks : list[QueuedTask]
+            A list of `QueuedTask` instances whose processing is confirmed. The 
+            `queued_task_id` from each object is used for acknowledgement.
+
+        Returns
+        -------
+        int 
+            The number of items successfully acknowledged in the task queue (returned by XACK).
 
         """
+        message_ids = [t.queued_task_id for t in tasks]
         if message_ids:
             LOGGER.info(f"Acknowledging {len(message_ids)} messages from {self.stream_key}")
+            # Use XACK to remove the messages from the PEL
             return self.redis_connection.xack(self.stream_key, self.group_name, *message_ids)  
         return 0
 
