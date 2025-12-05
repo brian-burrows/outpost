@@ -214,7 +214,7 @@ class RedisTaskQueueRepository(TaskQueueRepositoryInterface):
     def _serialize_task(self, task: TaskType) -> tuple[str, bytes]:
         return (task.task_id, task.model_dump_json())
     
-    def enqueue_tasks(self, tasks : list[TaskType]) -> list[UUID]:
+    def enqueue_tasks(self, tasks: list[TaskType]) -> list[QueuedTask]:
         """A method to enqueue tasks into the Redis Stream.
 
         Messages are enqueued using a Pipeline to minimize networking.
@@ -226,25 +226,44 @@ class RedisTaskQueueRepository(TaskQueueRepositoryInterface):
 
         Returns
         -------
-        list[UUID] : A list of task IDs that were successfully submitted to the queue.
-
+        list[QueuedTask] :
+            A list of `QueuedTask` instances representing the successfully submitted tasks.
+            
         """
         LOGGER.debug(f"Attempting to enqueue {len(tasks)} tasks to queue {self.stream_key}")
-        tasks = list(map(self._serialize_task, tasks))
-        LOGGER.debug("Successfully serialized tasks")
-        submitted_task_ids = []
+        # Prepare data and track original tasks for zipping with Redis reseponse later
+        tasks_to_submit = []
+        original_tasks_map = {}
+        for task in tasks:
+            task_id, task_bytes = self._serialize_task(task)
+            tasks_to_submit.append((task_id, task_bytes))
+            original_tasks_map[task_id] = task
         pipe = self.redis_connection.pipeline()
-        for task_id, task_bytes in tasks:
+        for task_id, task_bytes in tasks_to_submit:
             pipe.xadd(
                 name=self.stream_key,
                 fields={"data": task_bytes},
                 maxlen=self.max_stream_length
             )
-            submitted_task_ids.append(task_id)
+        # response is a list of Redis Stream IDs (strings) corresponding to each XADD command
         response = pipe.execute()
-        LOGGER.debug(f"Successfully executed pipeline to send {len(tasks)} to Redis {self.stream_key}")
-        LOGGER.debug(f"Received {response} from Redis after submitting tasks")
-        return submitted_task_ids
+        LOGGER.info(f"Successfully executed pipeline to send {len(tasks)} to Redis {self.stream_key}")
+        LOGGER.debug(f"Received Redis Stream IDs: {response}")
+        queued_tasks = []
+        # Redis Pipeline guarantees order matches between XADD order and Response order
+        for idx, redis_message_id in enumerate(response):
+            task_id, _ = tasks_to_submit[idx]
+            original_task = original_tasks_map[task_id]
+            # Since we just enqueued it, time metrics are zero/minimal
+            queued_task = QueuedTask(
+                queued_task_id=redis_message_id,
+                time_since_queued_seconds=0.0, 
+                time_since_last_delivered=0.0,
+                number_of_times_delivered=0, # Hasn't been delivered yet
+                task=original_task,
+            )
+            queued_tasks.append(queued_task)
+        return queued_tasks
     
     def _get_redis_server_time_ms(self):
         # Clocks might not be synchorized across servers, so we need to fetch the Redis server time
@@ -269,8 +288,8 @@ class RedisTaskQueueRepository(TaskQueueRepositoryInterface):
 
         Returns
         -------
-        list[tuple[str, TaskType]]]
-            A list of (msg_id, task) tuples as fetched from the Redis Stream.
+        list[QueuedTask]
+            A list of `QueuedTask` instances as fetched from the Redis Stream.
             Tasks will have been claimed by this worker, and moved to the 
             Pending Entries List in the Redis Stream.
 
