@@ -1,5 +1,6 @@
 import json
 import logging
+import time
 from abc import ABC, abstractmethod
 from typing import Type, TypeVar
 from uuid import UUID
@@ -108,7 +109,9 @@ class RedisTaskQueueRepository(TaskQueueRepositoryInterface):
         task_model: Type[TaskType],
         group_name: str | None = None,
         consumer_name: str | None = None,
-        max_stream_length: int | None = None
+        max_stream_length: int | None = None,
+        dequeue_blocking_time_seconds: int = 1,
+        dequeue_batch_size: int = 1,
     ):
         """A concrete implementation of TaskQueueRepositoryInterface using Redis.
         
@@ -128,6 +131,10 @@ class RedisTaskQueueRepository(TaskQueueRepositoryInterface):
             The name of the consumer within the specified Consumer Group.
         max_stream_length : int | None
             The maximum length of the Redis stream before entries will be truncated.
+        dequeue_blocking_time_seconds : int 
+            The number of seconds to block the thread while waiting for new tasks.
+        dequeue_batch_size : int 
+            The number of messages to fetch from Redis in a single read.
 
         """
         LOGGER.info(f"Connected to client {client.info}")
@@ -137,6 +144,8 @@ class RedisTaskQueueRepository(TaskQueueRepositoryInterface):
         self.group_name = group_name 
         self.consumer_name = consumer_name
         self.max_stream_length = max_stream_length
+        self.dequeue_blocking_time_seconds = dequeue_blocking_time_seconds
+        self.dequeue_batch_size = dequeue_batch_size
         if group_name and consumer_name:
             self._ensure_consumer_group_exists()
 
@@ -159,6 +168,9 @@ class RedisTaskQueueRepository(TaskQueueRepositoryInterface):
 
     def _deserialize_response(self, response: list[tuple[bytes, list[tuple[bytes, bytes]]]]) -> list[tuple[str, TaskType]]:
         """Deserialize a response object from Redis.
+
+        Deserializes a raw Redis stream response (XREAD/XCLAIM/XPENDING) 
+        into a list of (message_id, TaskType) tuples.
 
         Tasks are assumed to be produced by a producer in the following manner:
             Key: b'data'
@@ -234,7 +246,18 @@ class RedisTaskQueueRepository(TaskQueueRepositoryInterface):
         LOGGER.debug(f"Received {response} from Redis after submitting tasks")
         return submitted_task_ids
     
-    def dequeue_tasks(self, count: int, block_ms: int | None = None) -> list[tuple[str, TaskType]]:
+    def _get_redis_server_time_ms(self):
+        # Clocks might not be synchorized across servers, so we need to fetch the Redis server time
+        # in order to map the message ID timestamp to the message age.
+        # We won't fall back to the local server time, since that might create unwanted an hard-to find
+        # timing bugs. The Redis server must be the single source of truth for age calculations
+        redis_time = self.redis_connection.time()
+        # The TIME command returns the current server time as a two items lists: 
+        # a Unix timestamp and the amount of microseconds already elapsed in the current second. 
+        return (int(redis_time[0]) * 1000) + (int(redis_time[1]) // 1000)
+
+    
+    def dequeue_tasks(self) -> list[QueuedTask]:
         """Fetches only new tasks (for the specified consumer group) from the queue.
         
         Parameters
@@ -252,18 +275,38 @@ class RedisTaskQueueRepository(TaskQueueRepositoryInterface):
             Pending Entries List in the Redis Stream.
 
         """
+        count = self.dequeue_batch_size
         LOGGER.info(f"Attempting to fetch {count} tasks from {self.stream_key}")
+        # We need to calculate ages from Redis message ID timestamps, but clocks won't be sync'd with 
+        # this server's local clock. We cannot fetch the time and xreadgroup in a single atomic step
+        # so this two stage approach get's us close.
+        redis_server_time_ms = self._get_redis_server_time_ms()
         response = self.redis_connection.xreadgroup(
             groupname=self.group_name,
             consumername=self.consumer_name,
             streams={self.stream_key: '>'}, # > specifies new tasks only for the consumer group
             count=count,
-            block=block_ms,
+            block=self.dequeue_blocking_time_seconds * 1000, # Needs in milliseconds
         )
-        LOGGER.debug(f"Received {response} after trying to dequeue {count} tasks")
-        tasks = self._deserialize_response(response)
-        LOGGER.info(f"Found and claimed {len(tasks)} tasks from {self.stream_key}")
-        return tasks
+        deserialized_response = self._deserialize_response(response)
+        queued_tasks = []
+        LOGGER.info(f"Found and claimed {len(deserialized_response)} tasks from {self.stream_key}")
+        for message_id, task_object in deserialized_response:
+            time_queued_milliseconds = int(message_id.split("-")[0])
+            if redis_server_time_ms >= time_queued_milliseconds:
+                time_since_queued_seconds = (redis_server_time_ms - time_queued_milliseconds) / 1000.0
+            else:
+                LOGGER.warning(f"Found a task {message_id} from Redis that is newer than the current server time")
+                time_since_queued_seconds = 0.0
+            queued_task = QueuedTask(
+                queued_task_id=message_id, 
+                time_since_queued_seconds=time_since_queued_seconds,
+                number_of_times_delivered=1,
+                time_since_last_delivered=0.0,
+                task=task_object,
+            )
+            queued_tasks.append(queued_task)
+        return queued_tasks
 
     def acknowledge_tasks(self, message_ids: list[str]) -> int:
         """Confirms processing of tasks, removing them from the pending entries list.
